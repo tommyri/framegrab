@@ -6,6 +6,8 @@ Add entries under **Unreleased** as you make changes. A release moves them under
 
 ## Unreleased
 
+## 2026.11.0 - 2026-11-04
+
 ### Added
 
 - Capture the visible area, the full page or a single element, with each capture copied to the clipboard.
