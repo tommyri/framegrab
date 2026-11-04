@@ -12,4 +12,6 @@ const zip = join(root, "dist", `framegrab-${version}.zip`);
 mkdirSync(dirname(zip), { recursive: true });
 rmSync(zip, { force: true });
 execFileSync("zip", ["-qr", zip, ".", "-x", ".*"], { cwd: extension, stdio: "inherit" });
+// The MIT license has to travel with copies of the code.
+execFileSync("zip", ["-qj", zip, join(root, "LICENSE")], { stdio: "inherit" });
 console.log(zip);

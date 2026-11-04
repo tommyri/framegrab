@@ -15,3 +15,4 @@ Add entries under **Unreleased** as you make changes. A release moves them under
 - Combine a before and an after capture into one labelled image, finding the same element again after a reload.
 - Blur items with a generated patch that contains none of the original pixels. Blurs survive reloads, and a capture stops if a blurred item can't be found.
 - App icon.
+- MIT license.

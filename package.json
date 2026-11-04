@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "description": "Browser extension for developer screenshots",
+  "license": "MIT",
+  "repository": "github:tommyri/framegrab",
   "engines": {
     "node": ">=22"
   },

@@ -6,7 +6,7 @@ A Chromium browser extension (Brave, Chrome, Edge) for developer screenshots. Ea
 
 ## Install
 
-1. Download and unzip the latest release, or clone this repo.
+1. Download and unzip the [latest release](https://github.com/tommyri/framegrab/releases/latest), or clone this repo.
 2. Open `brave://extensions` (or `chrome://extensions`).
 3. Turn on **Developer mode**.
 4. Click **Load unpacked** and choose the unzipped folder, or the `extension` folder in a clone.
@@ -102,3 +102,7 @@ Add your changes under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) as you mak
 The workflow runs the tests, sets the version, moves the changelog entries under it, commits and tags on `main`, and publishes a GitHub release with the zip attached. It stops if **Unreleased** is empty. Tick **dry run** to do everything except the commit, tag and release.
 
 If you protect `main`, allow GitHub Actions to push to it, or the release's commit will be rejected.
+
+## License
+
+[MIT](LICENSE)
