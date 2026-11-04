@@ -683,14 +683,20 @@
   let patchLayer = null;
   let patchFrame = 0;
 
-  // Stored instead of the text, so a secret never reaches extension storage.
+  // Stored instead of the text, so a secret never reaches extension storage. It's
+  // synchronous because finding moved text tests every position in the element.
+  // 53 bits (cyrb53) make it very unlikely that different words would match.
   function textHash(text) {
-    let hash = 0x811c9dc5;
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
     for (let i = 0; i < text.length; i++) {
-      hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 0x01000193);
+      const code = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ code, 2654435761);
+      h2 = Math.imul(h2 ^ code, 1597334677);
     }
-    return hash >>> 0;
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
   }
 
   function textContainer(range) {
@@ -706,6 +712,7 @@
     before.setEnd(range.startContainer, range.startOffset);
     const text = range.toString();
     return {
+      origin: location.origin,
       container: locatorFor(container),
       start: before.toString().length,
       length: text.length,
@@ -801,12 +808,12 @@
   // Scrolling panels clip their text, so its patches have to be clipped too, or
   // they'd float over the rest of the page. Elements that can escape an ancestor's
   // clipping skip it: a patch that's too big is only untidy, one too small leaks.
-  function clipBox(container) {
+  function clipBox(element) {
     let box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     let needsPositioned = false;
-    for (let node = container; node; node = composedParent(node)) {
+    for (let node = element; node; node = composedParent(node)) {
       const style = getComputedStyle(node);
-      if (node !== container && !(needsPositioned && style.position === "static")) {
+      if (!(needsPositioned && style.position === "static")) {
         needsPositioned = false;
         if (style.overflowX !== "visible" || style.overflowY !== "visible") {
           const c = clientRect(node);
@@ -824,10 +831,34 @@
     return box;
   }
 
+  // The elements directly holding the selected text. The container that holds them
+  // all can't stand in for them: a hidden container can have visible children, and
+  // a child can escape the container's clipping.
+  function textParents(range) {
+    const parents = new Set();
+    const walker = document.createTreeWalker(range.commonAncestorContainer, NodeFilter.SHOW_TEXT);
+    let node = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer : walker.nextNode();
+    if (node) walker.currentNode = node;
+    while (node && range.comparePoint(node, 0) <= 0) {
+      if (node.data && range.intersectsNode(node) && node.parentElement) parents.add(node.parentElement);
+      node = walker.nextNode();
+    }
+    return [...parents];
+  }
+
   function textRects(mark) {
+    const parents = textParents(mark.range);
     // The capture hides fixed headers while stitching, and their patches with them.
-    if (!mark.container.checkVisibility({ checkVisibilityCSS: true })) return [];
-    const clip = clipBox(mark.container);
+    // If any of the text can show, the whole selection is covered.
+    const shown = parents.filter((parent) => getComputedStyle(parent).visibility === "visible");
+    if (!shown.length) return [];
+    // Combining the boxes errs towards a patch that's too big.
+    const clip = parents.map(clipBox).reduce((a, b) => ({
+      left: Math.min(a.left, b.left),
+      top: Math.min(a.top, b.top),
+      right: Math.max(a.right, b.right),
+      bottom: Math.max(a.bottom, b.bottom),
+    }));
     const rects = [];
     for (const r of mark.range.getClientRects()) {
       const left = Math.max(clip.left, r.left - PATCH_PAD);
@@ -940,7 +971,9 @@
           restored++;
         }
       } else {
-        const range = resolveTextLocator(locator);
+        // Searching another site's page for this text would let that page test
+        // guesses at it, so there it just counts as not found and the capture stops.
+        const range = locator.origin === location.origin ? resolveTextLocator(locator) : null;
         if (!range) {
           missing.push(locator);
         } else if (!blurOwner(textContainer(range))) {

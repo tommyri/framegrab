@@ -43,7 +43,7 @@ Choose **Blur items** in the popup, then press `Enter` when you're done:
 
 Click a blurred item again to unblur it.
 
-Blurred items stay blurred on the page and in every kind of capture, including after a reload, until you choose **Clear** in the popup or close the browser. Before/after images use the blurs saved with the before image, as well as any on the page.
+Blurred items stay blurred on the page and in every kind of capture, including after a reload, until you choose **Clear** in the popup or close the browser. Before/after images use the blurs saved with the before image, as well as any on the page. Blurred text from a before image isn't searched for on a different site, so **Capture after** stops there until you blur it again.
 
 Framegrab paints a generated frosted patch over the element rather than blurring it. The image contains none of the original pixels, so the content can't be recovered, unlike real blur, which can sometimes be reversed for text. Only the element's size and position remain visible. The patch takes its colour from the surrounding page.
 

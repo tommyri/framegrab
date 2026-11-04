@@ -139,6 +139,13 @@ Object.assign(PAGES, {
       root.append(p);
       window.shadowText = root;
     </script>`),
+  "/partial-hidden-parent": doc(`<p id="line" style="${lineStyle};visibility:hidden">before <span style="visibility:visible">SECRET</span><span style="visibility:visible">TOKEN</span> after</p>`),
+  "/partial-escaped": doc(`
+    <div style="overflow:hidden;width:150px;height:40px">
+      <p id="line" style="margin:0;color:#ff0000;font:30px monospace;white-space:nowrap">
+        <span style="position:absolute;left:300px;top:100px;background:#fff">SECRET</span><span style="position:absolute;left:408px;top:100px;background:#fff">TOKEN</span>
+      </p>
+    </div>`),
   "/partial-spans": doc(`<p id="line" style="${lineStyle}">before <b>SECRET</b>TOKEN after</p>`),
   "/blur-hide-svg": doc(`${secret("one", "TOKEN123")}`, "svg{display:none!important}"),
   "/blur-popover-shadow": doc(`
@@ -1924,5 +1931,61 @@ test("partial blur: Clear removes it", async () => {
   await page.locator("framegrab-blur").waitFor({ state: "detached" });
   const shot = await captureRegions("visible", secretBox);
   assert.ok(shot.regions[0].red > 50);
+  await page.close();
+});
+
+test("partial blur: visible text inside a hidden container is still covered", async () => {
+  await open("/partial-hidden-parent");
+  const first = await textBox("SECRET");
+  const second = await textBox("TOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await dragText({ ...first, right: second.right });
+  await page.keyboard.press("Enter");
+  const whole = { ...first, width: second.right - first.left };
+  const shot = await captureRegions("visible", whole);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: text that escapes a clipping ancestor is still covered", async () => {
+  await open("/partial-escaped");
+  const first = await textBox("SECRET");
+  const second = await textBox("TOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await dragText({ ...first, right: second.right });
+  await page.keyboard.press("Enter");
+  const whole = { ...first, width: second.right - first.left };
+  const shot = await captureRegions("visible", whole);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: a before's text isn't searched for on another site", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  await start("visible");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 30000 });
+  await setBefore();
+  // Same text, but a different origin, which must not be able to test guesses.
+  const otherOrigin = baseUrl.replace("localhost", "127.0.0.1");
+  await page.goto(`${otherOrigin}/partial`);
+  await start("after");
+  await toastTitled("Capture stopped").waitFor({ timeout: 30000 });
+  assert.equal(await page.locator("framegrab-blur").count(), 0, "nothing on this page reveals a match");
+  await page.close();
+});
+
+test("partial blur: a before's whole-element blur still carries to another site", async () => {
+  await open("/blur");
+  await blurItems("#one");
+  await captureElementAt("#one");
+  await setBefore();
+  const otherOrigin = baseUrl.replace("localhost", "127.0.0.1");
+  await page.goto(`${otherOrigin}/blur`);
+  await start("after");
+  await toastTitled("Before/after copied").waitFor({ timeout: 30000 });
+  assert.equal((await readCapture()).red, 0);
   await page.close();
 });
