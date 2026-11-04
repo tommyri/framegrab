@@ -36,13 +36,18 @@ Images sit side by side when they're narrow or tall, and stack when they're wide
 
 ### Blur
 
-Choose **Blur items** in the popup, click anything you want hidden, then press `Enter`. Click a blurred item again to unblur it. `↑` and `↓` move to the parent or child element first.
+Choose **Blur items** in the popup, then press `Enter` when you're done:
+
+- **Part of a line:** drag across the text you want hidden, such as a token in a sentence.
+- **A whole element:** click it. `↑` and `↓` move to the parent or child element first.
+
+Click a blurred item again to unblur it.
 
 Blurred items stay blurred on the page and in every kind of capture, including after a reload, until you choose **Clear** in the popup or close the browser. Before/after images use the blurs saved with the before image, as well as any on the page.
 
 Framegrab paints a generated frosted patch over the element rather than blurring it. The image contains none of the original pixels, so the content can't be recovered, unlike real blur, which can sometimes be reversed for text. Only the element's size and position remain visible. The patch takes its colour from the surrounding page.
 
-If a blurred item can't be found after the page changes, Framegrab stops and asks before capturing. It also refuses to capture if a popup or dialog is open inside a blurred item, because that content would show unblurred.
+If a blurred item can't be found after the page changes, Framegrab stops and asks before capturing. Blurred text has to be found again exactly, so if the text itself changes, that counts as not found. Framegrab stores a hash to recognise it, not the text. It also refuses to capture if a popup or dialog is open inside a blurred item, because that content would show unblurred.
 
 ### Annotate
 
@@ -72,7 +77,7 @@ If a shortcut clashes with another one, change it on the browser's extension sho
 - Elements wider than the window are cropped to its width.
 - The picker selects an iframe as a whole, not the elements inside it.
 - An element without an id or test id is found again by its position in the page, so a change to the structure around it can select a different element. This also applies to blurs after a reload, so check them before sharing. The toast warns you when that has happened.
-- Blur works on whole elements, not part of a line of text, and can't reach inside an iframe, only cover all of it.
+- Blur can't select part of a form field's value or reach inside an iframe, only cover the whole element.
 - In an app-style layout that scrolls a panel instead of the page, Full page captures that panel.
 - Stitched captures hide fixed headers and widgets after the first screen, and sticky elements stay in their normal position.
 - Browsers block extensions on internal pages such as `brave://` and the extension stores.

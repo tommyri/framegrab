@@ -68,7 +68,7 @@
       else if (captureMode === "full") await captureFullPage();
       else await captureElement(target);
       if (cancelled) throw new Cancelled();
-      const blurs = [...blurMarks.values()].map((mark) => mark.locator);
+      const blurs = allBlurLocators();
       const result = await send({ type: "finish", height: lastHeight, mode: captureMode, locator, compare, blurs });
       await deliver(result, { blurred: blurs.length, restored });
     } catch (error) {
@@ -240,6 +240,7 @@
 
   async function grab(clip, destX, destY, progress) {
     if (cancelled) throw new Cancelled();
+    await prepareTextPatches();
     assertBlursIntact();
     await send({ type: "slice", clip, destX, destY, innerWidth: window.innerWidth, progress });
     // The page could have changed while the screenshot was being taken. Failing
@@ -522,23 +523,22 @@
 
   // Tinted from the surroundings so the patch sits well in the page. Nothing
   // comes from the element itself, whose colour could carry meaning.
-  function blurTones(el) {
-    const parent = composedParent(el) || document.documentElement;
+  function blurTones(surroundings) {
     let background = { r: 255, g: 255, b: 255 };
-    for (let node = parent; node; node = composedParent(node)) {
+    for (let node = surroundings; node; node = composedParent(node)) {
       const color = parseColor(getComputedStyle(node).backgroundColor);
       if (color && color.a > 0.5) {
         background = color;
         break;
       }
     }
-    const text = parseColor(getComputedStyle(parent).color) || { r: 110, g: 110, b: 120 };
+    const text = parseColor(getComputedStyle(surroundings).color) || { r: 110, g: 110, b: 120 };
     const mix = (key) => Math.round(background[key] * 0.82 + text[key] * 0.18);
     return { base: `rgb(${mix("r")}, ${mix("g")}, ${mix("b")})`, text };
   }
 
-  function buildBlurFilter(id, el) {
-    const { base, text } = blurTones(el);
+  function buildBlurFilter(id, surroundings) {
+    const { base, text } = blurTones(surroundings);
     const node = (name, attrs, ...children) => {
       const element = document.createElementNS(SVG_NS, name);
       for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, value);
@@ -573,7 +573,7 @@
     mark.svg?.remove();
     const id = `framegrab-blur-${++blurFilterSeq}`;
     mark.id = id;
-    mark.svg = buildBlurFilter(id, el);
+    mark.svg = buildBlurFilter(id, composedParent(el) || document.documentElement);
     // url(#id) resolves within the element's own document or shadow root.
     const root = el.getRootNode();
     (root instanceof ShadowRoot ? root : document.documentElement).append(mark.svg);
@@ -601,6 +601,19 @@
 
   function clearBlurMarks() {
     for (const el of [...blurMarks.keys()]) unmarkBlur(el);
+    for (const mark of [...textMarks]) unmarkText(mark);
+  }
+
+  function allBlurLocators() {
+    return [...blurMarks.values(), ...textMarks].map((mark) => mark.locator);
+  }
+
+  // Browser storage reorders object keys, so plain JSON wouldn't match a locator
+  // that has been saved and read back.
+  function blurIdentity(locator) {
+    if (Array.isArray(locator)) return JSON.stringify(locator);
+    const { container, start, length, hash } = locator;
+    return JSON.stringify([container, start, length, hash]);
   }
 
   function blurOwner(el) {
@@ -644,12 +657,241 @@
     for (const other of [...blurMarks.keys()]) {
       if (deepContains(el, other)) unmarkBlur(other);
     }
+    for (const mark of [...textMarks]) {
+      if (deepContains(el, mark.container)) unmarkText(mark);
+    }
     markBlur(el);
   }
 
   function saveBlurs() {
-    const locators = [...blurMarks.values()].map((mark) => mark.locator);
-    return send({ type: "setBlurs", key: blurPageKey, locators });
+    return send({ type: "setBlurs", key: blurPageKey, locators: allBlurLocators() });
+  }
+
+  // ------------------------------------------------------- blur part of a line
+
+  // Selected text is covered by patches in a separate layer, positioned over the
+  // text's on-screen rectangles. Wrapping the text in an element instead would
+  // change the page's DOM, which breaks the frameworks that own it. As with whole
+  // elements, the patches are generated, so they hold nothing from the text.
+  const PATCH_CSS = `
+    * { box-sizing: border-box; }
+    .patch { position: fixed; top: 0; left: 0; pointer-events: none; }
+  `;
+  const PATCH_PAD = 1;
+  const MAX_SEARCH_LENGTH = 2000000;
+  const textMarks = new Set();
+  let patchLayer = null;
+  let patchFrame = 0;
+
+  // Stored instead of the text, so a secret never reaches extension storage.
+  function textHash(text) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+  }
+
+  function textContainer(range) {
+    const node = range.commonAncestorContainer;
+    return node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  }
+
+  function textLocatorFor(range) {
+    const container = textContainer(range);
+    if (!container) return null;
+    const before = document.createRange();
+    before.selectNodeContents(container);
+    before.setEnd(range.startContainer, range.startOffset);
+    const text = range.toString();
+    return {
+      container: locatorFor(container),
+      start: before.toString().length,
+      length: text.length,
+      hash: textHash(text),
+    };
+  }
+
+  // Finds the same text again, even if text before it has changed. Anything else
+  // counts as not found, because then the blur would cover the wrong words.
+  function resolveTextLocator(locator) {
+    const container = resolveLocator(locator.container);
+    if (!container) return null;
+    const nodes = [];
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const full = nodes.map((node) => node.data).join("");
+    if (full.length > MAX_SEARCH_LENGTH) return null;
+
+    const { start: wanted, length, hash } = locator;
+    const matches = (at) => textHash(full.slice(at, at + length)) === hash;
+    let start = -1;
+    if (matches(wanted)) start = wanted;
+    else {
+      for (let at = 0; at + length <= full.length; at++) {
+        if (matches(at) && (start === -1 || Math.abs(at - wanted) < Math.abs(start - wanted))) start = at;
+      }
+    }
+    if (start === -1) return null;
+
+    const range = document.createRange();
+    let offset = 0;
+    let startSet = false;
+    for (const node of nodes) {
+      const next = offset + node.data.length;
+      if (!startSet && start < next) {
+        range.setStart(node, start - offset);
+        startSet = true;
+      }
+      if (startSet && start + length <= next) {
+        range.setEnd(node, start + length - offset);
+        return range;
+      }
+      offset = next;
+    }
+    return null;
+  }
+
+  function ensurePatchLayer() {
+    if (patchLayer?.host.isConnected) return patchLayer;
+    const { host, root } = mountHost(PATCH_CSS, { "pointer-events": "none" }, "framegrab-blur");
+    patchLayer = { host, root };
+    // A page that removed the layer also removed the filters inside it.
+    for (const mark of textMarks) buildPatchFilter(mark);
+    return patchLayer;
+  }
+
+  function buildPatchFilter(mark) {
+    mark.id = `framegrab-blur-${++blurFilterSeq}`;
+    mark.svg = buildBlurFilter(mark.id, mark.container);
+    mark.base = blurTones(mark.container).base;
+    mark.patches = [];
+    patchLayer.root.append(mark.svg);
+  }
+
+  function markText(range, locator) {
+    const mark = { range, locator, container: textContainer(range), rects: [], patches: [] };
+    ensurePatchLayer();
+    buildPatchFilter(mark);
+    textMarks.add(mark);
+    raisePatchLayer();
+    positionPatches();
+    if (!patchFrame) patchFrame = requestAnimationFrame(followText);
+  }
+
+  function unmarkText(mark) {
+    for (const patch of mark.patches) patch.remove();
+    mark.svg?.remove();
+    textMarks.delete(mark);
+    if (!textMarks.size && patchLayer) {
+      patchLayer.host.remove();
+      patchLayer = null;
+    }
+  }
+
+  // Keeps patches on the text while the page scrolls or reflows.
+  function followText() {
+    patchFrame = 0;
+    if (!textMarks.size) return;
+    positionPatches();
+    patchFrame = requestAnimationFrame(followText);
+  }
+
+  // Scrolling panels clip their text, so its patches have to be clipped too, or
+  // they'd float over the rest of the page. Elements that can escape an ancestor's
+  // clipping skip it: a patch that's too big is only untidy, one too small leaks.
+  function clipBox(container) {
+    let box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    let needsPositioned = false;
+    for (let node = container; node; node = composedParent(node)) {
+      const style = getComputedStyle(node);
+      if (node !== container && !(needsPositioned && style.position === "static")) {
+        needsPositioned = false;
+        if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+          const c = clientRect(node);
+          box = {
+            left: Math.max(box.left, c.left),
+            top: Math.max(box.top, c.top),
+            right: Math.min(box.right, c.left + c.width),
+            bottom: Math.min(box.bottom, c.top + c.height),
+          };
+        }
+      }
+      if (style.position === "fixed") break;
+      if (style.position === "absolute") needsPositioned = true;
+    }
+    return box;
+  }
+
+  function textRects(mark) {
+    // The capture hides fixed headers while stitching, and their patches with them.
+    if (!mark.container.checkVisibility({ checkVisibilityCSS: true })) return [];
+    const clip = clipBox(mark.container);
+    const rects = [];
+    for (const r of mark.range.getClientRects()) {
+      const left = Math.max(clip.left, r.left - PATCH_PAD);
+      const top = Math.max(clip.top, r.top - PATCH_PAD);
+      const right = Math.min(clip.right, r.right + PATCH_PAD);
+      const bottom = Math.min(clip.bottom, r.bottom + PATCH_PAD);
+      if (right - left >= 1 && bottom - top >= 1) rects.push({ left, top, right, bottom });
+    }
+    return rects;
+  }
+
+  function positionPatches() {
+    if (!patchLayer) return;
+    for (const mark of textMarks) {
+      mark.rects = textRects(mark);
+      while (mark.patches.length > mark.rects.length) mark.patches.pop().remove();
+      while (mark.patches.length < mark.rects.length) {
+        const patch = document.createElement("div");
+        patch.className = "patch";
+        // The solid colour alone already hides the text, whatever happens to the filter.
+        patch.style.background = mark.base;
+        patch.style.filter = `url("#${mark.id}")`;
+        patchLayer.root.append(patch);
+        mark.patches.push(patch);
+      }
+      mark.rects.forEach(({ left, top, right, bottom }, i) => {
+        const { style } = mark.patches[i];
+        style.transform = `translate(${left}px, ${top}px)`;
+        style.width = `${right - left}px`;
+        style.height = `${bottom - top}px`;
+      });
+    }
+  }
+
+  // A dialog or popover opened later would otherwise paint over the patches.
+  function raisePatchLayer() {
+    if (!patchLayer) return;
+    try {
+      patchLayer.host.hidePopover();
+      patchLayer.host.showPopover();
+    } catch {}
+  }
+
+  async function prepareTextPatches() {
+    if (!textMarks.size) return;
+    ensurePatchLayer();
+    raisePatchLayer();
+    positionPatches();
+    await nextPaint();
+    positionPatches();
+  }
+
+  function isTextIntact(mark) {
+    return mark.container.isConnected && textHash(mark.range.toString()) === mark.locator.hash;
+  }
+
+  function textMarkAt(point) {
+    if (!point) return null;
+    for (const mark of textMarks) {
+      for (const { left, top, right, bottom } of mark.rects) {
+        if (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom) return mark;
+      }
+    }
+    return null;
   }
 
   // Brings the page in line with every blur that should be on it. Anything that
@@ -662,12 +904,15 @@
       for (const el of [...blurMarks.keys()]) {
         if (!el.isConnected) unmarkBlur(el);
       }
+      for (const mark of [...textMarks]) {
+        if (!mark.container.isConnected) unmarkText(mark);
+      }
       blurPageKey = key;
     }
     const { locators: stored } = await send({ type: "getBlurs", key });
     const wanted = new Map();
-    for (const locator of [...stored, ...extra, ...[...blurMarks.values()].map((m) => m.locator)]) {
-      wanted.set(JSON.stringify(locator), locator);
+    for (const locator of [...stored, ...extra, ...allBlurLocators()]) {
+      wanted.set(blurIdentity(locator), locator);
     }
 
     let restored = 0;
@@ -678,17 +923,30 @@
         restored++;
       }
     }
+    for (const mark of [...textMarks]) {
+      if (!isTextIntact(mark)) unmarkText(mark);
+    }
 
-    const applied = new Set([...blurMarks.values()].map((mark) => JSON.stringify(mark.locator)));
+    const applied = new Set(allBlurLocators().map(blurIdentity));
     const missing = [];
-    for (const [json, locator] of wanted) {
-      if (applied.has(json)) continue;
-      const el = resolveLocator(locator);
-      if (!el) {
-        missing.push(locator);
-      } else if (!blurOwner(el)) {
-        markBlur(el, locator);
-        restored++;
+    for (const [identity, locator] of wanted) {
+      if (applied.has(identity)) continue;
+      if (Array.isArray(locator)) {
+        const el = resolveLocator(locator);
+        if (!el) {
+          missing.push(locator);
+        } else if (!blurOwner(el)) {
+          markBlur(el, locator);
+          restored++;
+        }
+      } else {
+        const range = resolveTextLocator(locator);
+        if (!range) {
+          missing.push(locator);
+        } else if (!blurOwner(textContainer(range))) {
+          markText(range, locator);
+          restored++;
+        }
       }
     }
     if (!missing.length || ignoreMissing) await saveBlurs();
@@ -708,6 +966,11 @@
         throw new Error("A blurred item changed during the capture, so nothing was captured. Try again.");
       }
     }
+    for (const mark of textMarks) {
+      if (!isTextIntact(mark) || !patchLayer?.host.isConnected) {
+        throw new Error("A blurred item changed during the capture, so nothing was captured. Try again.");
+      }
+    }
   }
 
   function showMissingBlurs(count, retry) {
@@ -724,7 +987,7 @@
   }
 
   const blurCountText = () => {
-    const count = blurMarks.size;
+    const count = blurMarks.size + textMarks.size;
     return count === 1 ? "1 item blurred" : `${count} items blurred`;
   };
 
@@ -732,13 +995,21 @@
     await syncBlurs({ ignoreMissing: true });
     await pickElement({
       prompt: blurCountText(),
-      onPick: (el) => {
-        toggleBlur(el);
+      onPick: (el, point) => {
+        const textMark = textMarkAt(point);
+        if (textMark) unmarkText(textMark);
+        else toggleBlur(el);
+        return blurCountText();
+      },
+      onTextRange: (range) => {
+        const container = textContainer(range);
+        const locator = range.toString().trim() && !blurOwner(container) ? textLocatorFor(range) : null;
+        if (locator) markText(range, locator);
         return blurCountText();
       },
     });
     await saveBlurs();
-    if (!blurMarks.size) return;
+    if (!blurMarks.size && !textMarks.size) return;
     showToast({
       title: blurCountText(),
       detail: "They stay blurred in your screenshots until you clear them.",
@@ -757,8 +1028,8 @@
 
   // ----------------------------------------------------------------- picker
 
-  function mountHost(css, hostStyles) {
-    const host = document.createElement("framegrab-ui");
+  function mountHost(css, hostStyles, tagName = "framegrab-ui") {
+    const host = document.createElement(tagName);
     const fixed = {
       all: "initial",
       ...hostStyles,
@@ -823,11 +1094,17 @@
       margin-right: 3px;
     }
     .prompt { font-weight: 600; color: #ff9bc4; }
+    .selection {
+      position: fixed; top: 0; left: 0; pointer-events: none;
+      background: rgba(255, 45, 135, .4);
+      outline: 1px solid #ff2d87;
+    }
   `;
 
   // With onPick the picker stays open and each pick calls it; whatever it
   // returns replaces the prompt. Without it, the first pick resolves the promise.
-  function pickElement({ prompt = "", onPick = null } = {}) {
+  // With onTextRange, dragging across text selects part of it instead.
+  function pickElement({ prompt = "", onPick = null, onTextRange = null } = {}) {
     return new Promise((resolve) => {
       const { host, root } = mountHost(PICKER_CSS, { cursor: "crosshair" });
       const make = (tag, className, text) => {
@@ -844,7 +1121,7 @@
       const promptEl = make("span", "prompt", prompt);
       if (prompt) hint.append(promptEl);
       const items = onPick
-        ? [[["Click"], "blur or unblur"], [["↑", "↓"], "parent / child"], [["Enter"], "done"]]
+        ? [[["Click"], "blur or unblur"], [["Drag"], "across text to blur part"], [["↑", "↓"], "parent / child"], [["Enter"], "done"]]
         : [[["Click"], "capture"], [["↑", "↓"], "parent / child"], [["Esc"], "cancel"]];
       for (const [keys, action] of items) {
         const item = make("span");
@@ -857,6 +1134,76 @@
       let trail = [];
       let pointer = null;
       let frame = 0;
+      let press = null;
+      let selection = null;
+      let selectionEls = [];
+      let justDragged = false;
+
+      // Our own layer has to be out of the way for this kind of hit test.
+      function caretAt(x, y, shadowRoots) {
+        host.style.setProperty("pointer-events", "none", "important");
+        try {
+          let node;
+          let offset;
+          if (document.caretPositionFromPoint) {
+            const position = document.caretPositionFromPoint(x, y, { shadowRoots });
+            node = position?.offsetNode;
+            offset = position?.offset;
+          } else {
+            const range = document.caretRangeFromPoint?.(x, y);
+            node = range?.startContainer;
+            offset = range?.startOffset;
+          }
+          return node?.nodeType === Node.TEXT_NODE ? { node, offset } : null;
+        } finally {
+          host.style.removeProperty("pointer-events");
+        }
+      }
+
+      function rangeBetween(a, b) {
+        if (a.node.getRootNode() !== b.node.getRootNode()) return null;
+        const range = document.createRange();
+        range.setStart(a.node, a.offset);
+        range.setEnd(b.node, b.offset);
+        if (range.collapsed) {
+          range.setStart(b.node, b.offset);
+          range.setEnd(a.node, a.offset);
+        }
+        return range.collapsed ? null : range;
+      }
+
+      function paintSelection() {
+        for (const el of selectionEls) el.remove();
+        selectionEls = [...(selection?.getClientRects() || [])].map((r) => {
+          const el = make("div", "selection");
+          el.style.transform = `translate(${r.left}px, ${r.top}px)`;
+          el.style.width = `${r.width}px`;
+          el.style.height = `${r.height}px`;
+          root.append(el);
+          return el;
+        });
+      }
+
+      function onDown(event) {
+        swallow(event);
+        if (!event.isTrusted || !onTextRange || event.button !== 0) return;
+        const shadowRoots = [...allElements()].map((el) => el.shadowRoot).filter(Boolean);
+        const caret = caretAt(event.clientX, event.clientY, shadowRoots);
+        press = caret && { x: event.clientX, y: event.clientY, caret, shadowRoots, dragging: false };
+      }
+
+      function onUp(event) {
+        swallow(event);
+        if (!event.isTrusted || !press) return;
+        const { dragging } = press;
+        press = null;
+        if (!dragging) return;
+        justDragged = true;
+        const range = selection;
+        selection = null;
+        paintSelection();
+        if (range) promptEl.textContent = onTextRange(range);
+      }
 
       function elementAt(x, y) {
         let el = document.elementsFromPoint(x, y).find((e) => e !== host);
@@ -905,6 +1252,18 @@
         swallow(event);
         if (!event.isTrusted) return;
         pointer = { x: event.clientX, y: event.clientY };
+        if (press) {
+          if (!press.dragging && Math.hypot(pointer.x - press.x, pointer.y - press.y) >= 4) {
+            press.dragging = true;
+            box.hidden = tag.hidden = true;
+          }
+          if (press.dragging) {
+            const caret = caretAt(pointer.x, pointer.y, press.shadowRoots);
+            if (caret) selection = rangeBetween(press.caret, caret);
+            paintSelection();
+            return;
+          }
+        }
         cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
           const el = elementAt(pointer.x, pointer.y);
@@ -917,13 +1276,19 @@
 
       function pick() {
         if (!current) return;
-        promptEl.textContent = onPick(current);
+        promptEl.textContent = onPick(current, pointer);
         paint();
       }
 
       function onClick(event) {
         swallow(event);
         if (!event.isTrusted) return;
+        // The click that ends a drag has already done its job.
+        if (justDragged) {
+          justDragged = false;
+          return;
+        }
+        pointer = { x: event.clientX, y: event.clientY };
         const el = elementAt(event.clientX, event.clientY);
         if (!trail.length && el) current = el;
         if (onPick) pick();
@@ -959,12 +1324,14 @@
         else window.scrollBy({ left: event.deltaX, top: event.deltaY, ...INSTANT });
       }
 
-      const swallowed = ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "auxclick", "contextmenu", "keyup", "keypress", "touchstart", "touchend"];
+      const swallowed = ["mousedown", "mouseup", "dblclick", "auxclick", "contextmenu", "keyup", "keypress", "touchstart", "touchend"];
       const options = { capture: true, passive: false };
 
       function attach(add) {
         const method = add ? "addEventListener" : "removeEventListener";
         window[method]("pointermove", onMove, options);
+        window[method]("pointerdown", onDown, options);
+        window[method]("pointerup", onUp, options);
         window[method]("mousemove", swallow, options);
         window[method]("click", onClick, options);
         window[method]("keydown", onKey, options);
@@ -977,6 +1344,7 @@
       function finish(result) {
         attach(false);
         cancelAnimationFrame(frame);
+        for (const el of selectionEls) el.remove();
         host.remove();
         cancelPicker = null;
         resolve(result);

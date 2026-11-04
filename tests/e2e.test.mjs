@@ -25,6 +25,11 @@ const bands = (count) =>
 const doc = (body, head = "") =>
   `<!doctype html><html><head><style>html,body{margin:0}${head}</style></head><body>${body}</body></html>`;
 
+const lineStyle = "margin:0 0 10px;height:40px;width:760px;background:#fff;color:#ff0000;font:30px monospace;white-space:nowrap";
+function partial(text) {
+  return doc(`<p id="line" style="${lineStyle}">${text}</p><script>window.pageClicks = 0; addEventListener("click", () => window.pageClicks++);</script>`);
+}
+
 const PAGES = {
   "/tall": doc(`
     <div id="top" style="position:fixed;top:0;left:0;right:0;height:60px;background:#ff0000;z-index:9"></div>
@@ -62,6 +67,7 @@ const PAGES = {
       <div id="deep" style="height:1500px">${bands(3)}</div>
     </div>
     <div style="height:2000px"></div>`),
+  "/partial-strict": doc(`<p id="line" style="margin:0;height:40px;width:760px;color:#ff0000;font:30px monospace">before SECRETTOKEN after</p>`),
   "/blur-strict": doc(`<p id="one" style="margin:0;width:300px;height:40px;color:#ff0000;font:30px monospace">SECRET</p>`),
   "/strict": doc(`<div id="card" style="width:200px;height:100px;background:#123456"></div>${bands(3)}`),
   "/dialog": doc(`
@@ -112,6 +118,28 @@ Object.assign(PAGES, {
   "/blur-tall": doc(`${bands(3)}${secret("deep", "TOKEN123")}${bands(3)}`),
   "/annotate": doc(`<div style="height:3000px;background:#123456"></div>`, "body{background:#123456}"),
   "/blur-other": doc(`${secret("unrelated", "NOTSECRET")}`),
+  "/partial": partial("before SECRETTOKEN after", "SECRETTOKEN"),
+  "/partial-shifted": partial("added text before SECRETTOKEN after", "SECRETTOKEN"),
+  "/partial-changed": partial("before DIFFERENT00 after", "DIFFERENT00"),
+  "/partial-twin": doc(`<p id="a" style="${lineStyle}">before SECRETTOKEN after</p><p id="b" style="${lineStyle}">before OTHERVALUES after</p>`),
+  "/partial-tall": doc(`
+    <div style="position:fixed;top:0;left:0;right:0;height:50px;background:#00ff00;z-index:9"><span id="head" style="${lineStyle};display:inline">head SECRET</span></div>
+    ${bands(3)}<p id="line" style="${lineStyle}">before SECRETTOKEN after</p>${bands(3)}`),
+  "/partial-panel": doc(`
+    <div id="panel" style="height:200px;width:700px;overflow:auto;background:#fff"><p id="line" style="${lineStyle}">before SECRETTOKEN after</p><div style="height:2000px"></div></div>
+    <div id="below" style="height:300px;background:#00ff00"></div>`),
+  "/partial-shadow": doc(`
+    <div id="wc"></div>
+    <script>
+      const root = document.getElementById("wc").attachShadow({ mode: "open" });
+      const p = document.createElement("p");
+      p.id = "line";
+      p.style.cssText = ${JSON.stringify(lineStyle)};
+      p.textContent = "before SECRETTOKEN after";
+      root.append(p);
+      window.shadowText = root;
+    </script>`),
+  "/partial-spans": doc(`<p id="line" style="${lineStyle}">before <b>SECRET</b>TOKEN after</p>`),
   "/blur-hide-svg": doc(`${secret("one", "TOKEN123")}`, "svg{display:none!important}"),
   "/blur-popover-shadow": doc(`
     <div id="holder" style="width:300px;height:60px"><div id="wc"></div></div>
@@ -152,7 +180,7 @@ before(async () => {
     const html = PAGES[req.url];
     if (!html) return res.writeHead(404).end();
     const headers = { "content-type": "text/html" };
-    if (req.url === "/strict" || req.url === "/blur-strict") headers["content-security-policy"] = STRICT_CSP;
+    if (req.url === "/strict" || req.url === "/blur-strict" || req.url === "/partial-strict") headers["content-security-policy"] = STRICT_CSP;
     res.writeHead(200, headers).end(html);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -255,9 +283,9 @@ async function latestId() {
 }
 
 // Reads the newest capture. `columns` are returned top to bottom in image pixels.
-async function readCapture(columns = []) {
+async function readCapture(columns = [], regions = []) {
   await toast().waitFor({ timeout: 60000 });
-  return worker.evaluate(async ({ columns }) => {
+  return worker.evaluate(async ({ columns, regions }) => {
     const db = await new Promise((resolve, reject) => {
       const req = indexedDB.open("framegrab", 2);
       req.onsuccess = () => resolve(req.result);
@@ -280,6 +308,19 @@ async function readCapture(columns = []) {
     for (let i = 0; i < pixels.length; i += 4) {
       if (pixels[i] > 230 && pixels[i + 1] < 40 && pixels[i + 2] < 40) red++;
     }
+    const regionsOut = [];
+    for (const [x, y, w, h] of regions) {
+      const data = ctx.getImageData(x, y, w, h).data;
+      let regionRed = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 230 && data[i + 1] < 40 && data[i + 2] < 40) regionRed++;
+      }
+      const sum = await crypto.subtle.digest("SHA-256", data);
+      regionsOut.push({
+        red: regionRed,
+        hash: [...new Uint8Array(sum)].map((b) => b.toString(16).padStart(2, "0")).join(""),
+      });
+    }
     const output = {};
     for (const x of columns) {
       const data = ctx.getImageData(x, 0, 1, bitmap.height).data;
@@ -290,13 +331,14 @@ async function readCapture(columns = []) {
       compare: capture.compare,
       hash,
       red,
+      regions: regionsOut,
       width: bitmap.width,
       height: bitmap.height,
       filename: capture.filename,
       notes: capture.notes,
       columns: output,
     };
-  }, { columns });
+  }, { columns, regions });
 }
 
 const near = (a, b, tolerance = 3) => a.every((v, i) => Math.abs(v - b[i]) <= tolerance);
@@ -1464,5 +1506,423 @@ test("annotate last capture: the shortcut opens the editor", async () => {
   ]);
   await editor.waitForURL(/preview\.html\?id=\d+$/);
   await editor.close();
+  await page.close();
+});
+
+// --------------------------------------------------------- part of a line
+
+// Where a piece of text is on screen, in CSS pixels.
+const textBox = (needle, id = "line") =>
+  page.evaluate(
+    ({ needle, id }) => {
+      const el = window.shadowText?.getElementById(id) ?? document.getElementById(id);
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const at = node.data.indexOf(needle);
+        if (at !== -1) {
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + needle.length);
+          const r = range.getBoundingClientRect();
+          return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+        }
+      }
+      return null;
+    },
+    { needle, id },
+  );
+
+async function dragText(box) {
+  const y = box.top + box.height / 2;
+  await page.mouse.move(box.left + 0.5, y);
+  await page.mouse.down();
+  await page.mouse.move((box.left + box.right) / 2, y);
+  await page.mouse.move(box.right - 0.5, y);
+  await page.mouse.up();
+}
+
+async function blurText(...needles) {
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  for (const needle of needles) await dragText(await textBox(needle));
+  await page.keyboard.press("Enter");
+  await page.locator("framegrab-ui .hint").waitFor({ state: "detached" });
+}
+
+const region = (box) => [
+  Math.floor(box.left * SCALE),
+  Math.floor(box.top * SCALE),
+  Math.ceil(box.width * SCALE),
+  Math.ceil(box.height * SCALE),
+];
+
+async function captureRegions(mode, ...boxes) {
+  await start(mode);
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 60000 });
+  return readCapture([], boxes.map(region));
+}
+
+test("partial blur: hides the selected text and leaves the rest of the line", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  const beforeBox = await textBox("before");
+  const afterBox = await textBox("after");
+  await blurText("SECRETTOKEN");
+  assert.equal(await page.evaluate(() => window.pageClicks), 0);
+  const shot = await captureRegions("visible", secretBox, beforeBox, afterBox);
+  assert.equal(shot.regions[0].red, 0, "secret is gone");
+  assert.ok(shot.regions[1].red > 50, "text before it remains");
+  assert.ok(shot.regions[2].red > 50, "text after it remains");
+  await page.close();
+});
+
+test("partial blur: dragging backwards works too", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  const y = secretBox.top + secretBox.height / 2;
+  await page.mouse.move(secretBox.right - 0.5, y);
+  await page.mouse.down();
+  await page.mouse.move(secretBox.left + 40, y);
+  await page.mouse.move(secretBox.left + 0.5, y);
+  await page.mouse.up();
+  await page.keyboard.press("Enter");
+  const shot = await captureRegions("visible", secretBox);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: the page's DOM isn't changed", async () => {
+  await open("/partial");
+  const before = await page.locator("#line").evaluate((el) => ({ html: el.outerHTML, nodes: el.childNodes.length }));
+  await blurText("SECRETTOKEN");
+  const after = await page.locator("#line").evaluate((el) => ({ html: el.outerHTML, nodes: el.childNodes.length }));
+  assert.deepEqual(after, before);
+  await page.close();
+});
+
+test("partial blur: output doesn't depend on the text", async () => {
+  const capturePatch = async (path, needle) => {
+    await open(path);
+    await blurText(needle);
+    const shot = await captureRegions("visible", await textBox(needle));
+    await page.close();
+    return shot.regions[0];
+  };
+  const first = await capturePatch("/partial", "SECRETTOKEN");
+  const second = await capturePatch("/partial-changed", "DIFFERENT00");
+  assert.equal(first.red, 0);
+  assert.equal(first.hash, second.hash, "different text in the same place, identical pixels");
+});
+
+test("partial blur: repeated captures don't stack up patches or warn", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  for (let i = 0; i < 2; i++) {
+    await start("visible");
+    await toastTitled("Copied to clipboard").waitFor({ timeout: 30000 });
+    const text = await toast().innerText();
+    assert.match(text, /1 blurred/);
+    assert.doesNotMatch(text, /re-applied/);
+    await page.waitForTimeout(600);
+  }
+  await page.reload();
+  await start("visible");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 30000 });
+  assert.match(await toast().innerText(), /1 blurred/);
+  await page.close();
+});
+
+test("partial blur: the text itself never reaches extension storage", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  await captureRegions("visible");
+  await toastButton("Set as before").click();
+  await toastButton("Before saved").waitFor();
+  const stored = await worker.evaluate(async () => {
+    const session = await chrome.storage.session.get(null);
+    const db = await new Promise((resolve) => {
+      const req = indexedDB.open("framegrab", 2);
+      req.onsuccess = () => resolve(req.result);
+    });
+    const read = (name) =>
+      new Promise((resolve) => {
+        const req = db.transaction(name).objectStore(name).getAll();
+        req.onsuccess = () => resolve(req.result);
+      });
+    const strip = (rows) => rows.map(({ blob, ...rest }) => rest);
+    const out = JSON.stringify({ session, captures: strip(await read("captures")), before: strip(await read("before")) });
+    db.close();
+    return out;
+  });
+  assert.ok(stored.includes('"hash"'), "the blur was stored");
+  assert.ok(!stored.includes("SECRET"), "but not its text");
+  await page.close();
+});
+
+test("partial blur: spans several elements", async () => {
+  await open("/partial-spans");
+  const start1 = await textBox("SECRET");
+  const end1 = await textBox("TOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await dragText({ ...start1, right: end1.right });
+  await page.keyboard.press("Enter");
+  const shot = await captureRegions("visible", { ...start1, width: end1.right - start1.left });
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: clicking the patch unblurs it", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.mouse.click(secretBox.left + 20, secretBox.top + 10);
+  await page.keyboard.press("Enter");
+  await page.locator("framegrab-ui .hint").waitFor({ state: "detached" });
+  assert.equal(await page.locator("framegrab-blur").count(), 0, "layer is gone");
+  assert.equal(await page.locator("#line").evaluate((el) => el.style.filter), "", "element wasn't blurred instead");
+  const shot = await captureRegions("visible", secretBox);
+  assert.ok(shot.regions[0].red > 50);
+  await page.close();
+});
+
+test("partial blur: a plain click still blurs the whole element", async () => {
+  await open("/partial");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  const box = await textBox("before");
+  await page.mouse.move(box.left + 11, box.top + 6);
+  await page.mouse.move(box.left + 10, box.top + 5);
+  await page.waitForTimeout(100);
+  await page.mouse.click(box.left + 10, box.top + 5);
+  await page.keyboard.press("Enter");
+  assert.ok(await page.locator("#line").evaluate((el) => el.style.filter.includes("framegrab-blur")));
+  await page.close();
+});
+
+test("partial blur: survives a reload", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await page.reload();
+  const shot = await captureRegions("visible", secretBox);
+  assert.equal(shot.regions[0].red, 0);
+  assert.match(await toast().innerText(), /re-applied/);
+  await page.close();
+});
+
+test("partial blur: follows the text when text before it changes", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => {
+    document.getElementById("line").firstChild.data = "new words here before SECRETTOKEN after";
+  });
+  const moved = await textBox("SECRETTOKEN");
+  const shot = await captureRegions("visible", moved);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: refuses to capture when the text has changed", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => {
+    document.getElementById("line").firstChild.data = "before NEWSECRET99 after";
+  });
+  const before = await latestId();
+  await start("visible");
+  await toastTitled("Capture stopped").waitFor({ timeout: 30000 });
+  assert.equal(await latestId(), before);
+  await page.close();
+});
+
+test("partial blur: text changing mid-capture aborts", async () => {
+  await open("/partial-tall");
+  // Centred, because at the top of the window the fixed header covers the line.
+  await page.evaluate(() => document.getElementById("line").scrollIntoView({ block: "center" }));
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  const before = await latestId();
+  await start("full");
+  await page.waitForFunction(() => window.scrollY > 0);
+  await page.evaluate(() => {
+    document.getElementById("line").firstChild.data = "before REVEALEDTXT after";
+  });
+  await toast().waitFor({ timeout: 30000 });
+  assert.match(await toast().innerText(), /^Capture failed/);
+  assert.equal(await latestId(), before);
+  await page.close();
+});
+
+test("partial blur: stitched capture covers the text and draws no stray patches", async () => {
+  await open("/partial-tall");
+  await page.evaluate(() => document.getElementById("line").scrollIntoView({ block: "center" }));
+  const secretBox = await textBox("SECRETTOKEN");
+  const beforeBox = await textBox("before");
+  await blurText("SECRETTOKEN");
+  await start("full");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 60000 });
+  // In page coordinates: the line sits right after three 500 px bands.
+  const onLine = (box) => [Math.floor(box.left * SCALE), 1500 * SCALE, Math.ceil(box.width * SCALE), 40 * SCALE];
+  const shot = await readCapture([300], [onLine(secretBox), onLine(beforeBox)]);
+  assert.equal(shot.regions[0].red, 0, "the secret is gone from the stitched image");
+  assert.ok(shot.regions[1].red > 50, "the unblurred words on that line remain");
+  const column = shot.columns[300];
+  // Bands above and below the line stay exactly as they are.
+  // The 50 px line pushes everything after it down.
+  assert.ok(near(column[1010 * SCALE], rgb(COLORS[2])));
+  assert.ok(near(column[2060 * SCALE], rgb(COLORS[1])));
+  await page.close();
+});
+
+test("partial blur: a fixed header's patch doesn't repeat down a stitched image", async () => {
+  await open("/partial-tall");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await dragText(await textBox("SECRET", "head"));
+  await page.keyboard.press("Enter");
+  await start("full");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 60000 });
+  const shot = await readCapture([40]);
+  const column = shot.columns[40];
+  for (let y = 60 * SCALE; y < 1500 * SCALE; y++) {
+    const expected = rgb(COLORS[Math.floor(y / SCALE / BAND) % COLORS.length]);
+    if (y / SCALE % BAND < 1 || BAND - y / SCALE % BAND < 1) continue;
+    assert.ok(near(column[y], expected), `y=${y}: got ${column[y]}`);
+  }
+  await page.close();
+});
+
+test("partial blur: a patch scrolled out of its panel doesn't float over the page", async () => {
+  await open("/partial-panel");
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => document.getElementById("panel").scrollTo({ top: 1000, behavior: "instant" }));
+  await page.waitForTimeout(100);
+  const below = await page.locator("#below").boundingBox();
+  await start("visible");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 30000 });
+  const shot = await readCapture([300]);
+  const column = shot.columns[300];
+  assert.ok(near(column[(below.y + 20) * SCALE], [0, 255, 0]));
+  assert.ok(near(column[50 * SCALE], [255, 255, 255]), "panel shows its own scrolled content, no patch");
+  await page.close();
+});
+
+test("partial blur: stays on top of a dialog opened afterwards", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.style.cssText = "position:fixed;inset:0;margin:0;width:760px;height:60px;padding:0;border:0;background:#fff;color:#ff0000;font:30px monospace";
+    dialog.textContent = "dialog above";
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.close();
+    document.getElementById("line").style.position = "relative";
+    document.getElementById("line").popover = "manual";
+    document.getElementById("line").style.cssText += ";inset:auto;margin:0;padding:0;border:0;display:block;position:fixed;top:0;left:0";
+    document.getElementById("line").showPopover();
+  });
+  const box = await textBox("SECRETTOKEN");
+  const shot = await captureRegions("visible", box);
+  assert.equal(shot.regions[0].red, 0, `was at ${JSON.stringify(secretBox)}`);
+  await page.close();
+});
+
+test("partial blur: removing the patch layer brings it back before capturing", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await page.evaluate(() => document.querySelector("framegrab-blur").remove());
+  const shot = await captureRegions("visible", secretBox);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: page CSS can't hide the patch layer", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await page.addStyleTag({ content: "framegrab-blur{display:none!important;opacity:0!important}" });
+  const shot = await captureRegions("visible", secretBox);
+  assert.equal(shot.regions[0].red, 0);
+  await page.close();
+});
+
+test("partial blur: works in shadow DOM and under strict CSP", async () => {
+  for (const path of ["/partial-shadow", "/partial-strict"]) {
+    await open(path);
+    const secretBox = await textBox("SECRETTOKEN");
+    await blurText("SECRETTOKEN");
+    const shot = await captureRegions("visible", secretBox);
+    assert.equal(shot.regions[0].red, 0, path);
+    await page.close();
+  }
+});
+
+test("partial blur: fake events can't select text", async () => {
+  await open("/partial");
+  const box = await textBox("SECRETTOKEN");
+  await start("blur");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.evaluate(({ left, right, top }) => {
+    const fire = (type, x) => window.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: top + 10, button: 0, bubbles: true }));
+    fire("pointerdown", left + 1);
+    fire("pointermove", right - 1);
+    fire("pointerup", right - 1);
+  }, box);
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator("framegrab-blur").count(), 0);
+  await page.keyboard.press("Enter");
+  await page.close();
+});
+
+test("partial blur: carries into a before/after on another page", async () => {
+  await open("/partial");
+  await blurText("SECRETTOKEN");
+  await start("visible");
+  await toastTitled("Copied to clipboard").waitFor({ timeout: 30000 });
+  await setBefore();
+  await page.goto(`${baseUrl}/partial-shifted`);
+  await start("after");
+  await toastTitled("Before/after copied").waitFor({ timeout: 30000 });
+  const secretBox = await textBox("SECRETTOKEN");
+  const wordsBox = await textBox("added");
+  // Find the after image inside the combined one.
+  const stacked = VIEWPORT.width / VIEWPORT.height >= 1.5;
+  const h = VIEWPORT.height * SCALE;
+  const w = VIEWPORT.width * SCALE;
+  const inAfter = (box) => {
+    const [x, y, width, height] = region(box);
+    return stacked
+      ? [x + PAD, y + PAD + LABEL + h + GAP + LABEL, width, height]
+      : [x + PAD + w + GAP, y + PAD + LABEL, width, height];
+  };
+  const shot = await readCapture([], [inAfter(secretBox), inAfter(wordsBox)]);
+  assert.ok(shot.compare);
+  assert.equal(shot.regions[0].red, 0, "the before's blur followed the text to its new position");
+  assert.ok(shot.regions[1].red > 50, "the new words around it remain");
+
+  // That secret isn't on this page, so the after has to stop rather than guess.
+  await page.goto(`${baseUrl}/partial-changed`);
+  await start("after");
+  await toastTitled("Capture stopped").waitFor({ timeout: 30000 });
+  await page.close();
+});
+
+test("partial blur: Clear removes it", async () => {
+  await open("/partial");
+  const secretBox = await textBox("SECRETTOKEN");
+  await blurText("SECRETTOKEN");
+  await toastButton("Clear all").click();
+  await page.locator("framegrab-blur").waitFor({ state: "detached" });
+  const shot = await captureRegions("visible", secretBox);
+  assert.ok(shot.regions[0].red > 50);
   await page.close();
 });
