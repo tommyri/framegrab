@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Framegrab</title>
+    <link rel="stylesheet" href="ui.css" />
+  </head>
+  <body class="popup">
+    <section class="compare" hidden>
+      <button class="shot" data-mode="after">
+        <img class="thumb" alt="" />
+        <span class="name">Capture after</span>
+        <kbd data-command="capture-after"></kbd>
+      </button>
+      <p class="pending">
+        <span>Before image saved</span>
+        <button id="clear-before" class="link">Clear</button>
+      </p>
+    </section>
+    <main>
+      <button class="shot" data-mode="visible">
+        <svg viewBox="0 0 28 22" aria-hidden="true">
+          <rect class="page" x="1" y="1" width="26" height="20" rx="2" />
+          <rect class="grab" x="1" y="1" width="26" height="20" rx="2" />
+        </svg>
+        <span class="name">Visible area</span>
+        <kbd data-command="capture-visible"></kbd>
+      </button>
+      <button class="shot" data-mode="full">
+        <svg viewBox="0 0 28 22" aria-hidden="true">
+          <rect class="grab" x="6" y="1" width="16" height="20" rx="1.5" />
+          <path class="page" d="M1 6h26M1 16h26" />
+        </svg>
+        <span class="name">Full page</span>
+        <kbd data-command="capture-full"></kbd>
+      </button>
+      <button class="shot" data-mode="element">
+        <svg viewBox="0 0 28 22" aria-hidden="true">
+          <rect class="page" x="1" y="1" width="26" height="20" rx="2" />
+          <rect class="grab" x="8" y="6" width="12" height="10" rx="1" />
+        </svg>
+        <span class="name">Pick an element</span>
+        <kbd data-command="capture-element"></kbd>
+      </button>
+      <button class="shot" data-mode="blur">
+        <svg viewBox="0 0 28 22" aria-hidden="true">
+          <path class="page" d="M2 6h24M2 16h24" />
+          <rect class="fill" x="6" y="8" width="16" height="6" rx="3" />
+        </svg>
+        <span class="name">Blur items</span>
+        <kbd data-command="capture-blur"></kbd>
+      </button>
+      <p class="pending blurred" hidden>
+        <span></span>
+        <button id="clear-blurs" class="link">Clear</button>
+      </p>
+    </main>
+
+    <fieldset class="size">
+      <legend>Image size</legend>
+      <label>
+        <input type="radio" name="size" value="full" />
+        <span>Full resolution</span>
+      </label>
+      <label>
+        <input type="radio" name="size" value="1x" />
+        <span>Standard (1x)</span>
+      </label>
+    </fieldset>
+
+    <p class="error" role="alert" hidden></p>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Test and build, but don't commit, tag or publish
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases can only be run from main."
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+
+      - name: Set the version and update the changelog
+        id: prepare
+        run: node scripts/release.mjs
+
+      - name: Build the extension zip
+        run: npm run package
+
+      - name: Summarise
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          {
+            echo "## $VERSION"
+            echo
+            cat dist/release-notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit and tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.prepare.outputs.version }}
+          TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md package.json package-lock.json extension/manifest.json
+          git commit -m "Release $VERSION"
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push --atomic origin HEAD:main "refs/tags/$TAG"
+
+      - name: Publish the GitHub release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+          TAG: ${{ steps.prepare.outputs.tag }}
+        run: |
+          gh release create "$TAG" "dist/framegrab-$VERSION.zip" \
+            --verify-tag \
+            --title "$VERSION" \
+            --notes-file dist/release-notes.md

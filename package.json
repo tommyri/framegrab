@@ -1,0 +1,19 @@
+{
+  "name": "framegrab",
+  "version": "2026.11.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser extension for developer screenshots",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
+    "package": "node scripts/package.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "release:preview": "node scripts/release.mjs --dry-run"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

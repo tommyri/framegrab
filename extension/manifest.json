@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Framegrab",
+  "version": "2026.11.0",
+  "description": "Screenshot the visible area, the full page or a single element, and paste it straight into a PR or Slack.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "downloads", "storage", "clipboardWrite"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Framegrab",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png" }
+  },
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "commands": {
+    "capture-visible": {
+      "suggested_key": { "default": "Alt+Shift+V" },
+      "description": "Capture the visible area"
+    },
+    "capture-full": {
+      "suggested_key": { "default": "Alt+Shift+F" },
+      "description": "Capture the full page"
+    },
+    "capture-element": {
+      "suggested_key": { "default": "Alt+Shift+E" },
+      "description": "Pick an element to capture"
+    },
+    "capture-after": {
+      "suggested_key": { "default": "Alt+Shift+G", "mac": "Alt+Shift+A" },
+      "description": "Capture the after image and combine it with the saved before"
+    },
+    "capture-blur": {
+      "description": "Choose items to blur in screenshots"
+    }
+  }
+}
