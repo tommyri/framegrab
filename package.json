@@ -1,6 +1,6 @@
 {
   "name": "framegrab",
-  "version": "2026.11.0",
+  "version": "2026.11.1",
   "private": true,
   "type": "module",
   "description": "Browser extension for developer screenshots",

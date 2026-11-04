@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Framegrab",
-  "version": "2026.11.0",
+  "version": "2026.11.1",
   "description": "Screenshot the visible area, the full page or a single element, and paste it straight into a PR or Slack.",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "clipboardWrite"],

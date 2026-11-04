@@ -6,6 +6,8 @@ Add entries under **Unreleased** as you make changes. A release moves them under
 
 ## Unreleased
 
+## 2026.11.1 - 2026-11-04
+
 ### Added
 
 - Blur part of a line by dragging across the text. The page's DOM isn't changed, and a capture stops if the text changes.
