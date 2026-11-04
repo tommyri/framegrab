@@ -57,6 +57,18 @@ export function loadCapture(id) {
   return read(CAPTURES, id);
 }
 
+// Capture ids are timestamps, so the highest key is the newest capture.
+export async function loadLatestCapture() {
+  const db = await open();
+  const req = db.transaction(CAPTURES).objectStore(CAPTURES).openCursor(null, "prev");
+  const value = await new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result?.value);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return value;
+}
+
 export async function saveBefore(capture) {
   const db = await open();
   const tx = db.transaction(BEFORE, "readwrite");

@@ -1,9 +1,9 @@
-import { loadBefore } from "./store.js";
+import { loadBefore, loadLatestCapture } from "./store.js";
 
 const errorEl = document.querySelector(".error");
 const compareEl = document.querySelector(".compare");
 
-for (const button of document.querySelectorAll(".shot")) {
+for (const button of document.querySelectorAll(".shot[data-mode]")) {
   button.addEventListener("click", () => capture(button.dataset.mode));
 }
 
@@ -28,6 +28,17 @@ const before = await loadBefore();
 if (before) {
   compareEl.querySelector(".thumb").src = URL.createObjectURL(before.blob);
   compareEl.hidden = false;
+}
+
+const annotateButton = document.querySelector("#annotate-last");
+const latest = await loadLatestCapture();
+if (latest) {
+  annotateButton.querySelector(".thumb").src = URL.createObjectURL(latest.blob);
+  annotateButton.hidden = false;
+  annotateButton.addEventListener("click", async () => {
+    await chrome.runtime.sendMessage({ type: "annotateLast" });
+    window.close();
+  });
 }
 
 const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });

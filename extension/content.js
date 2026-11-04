@@ -1161,7 +1161,7 @@
         }
       },
     };
-    const open = { label: "Open", run: () => send({ type: "openPreview", id }) };
+    const open = { label: "Annotate", run: () => send({ type: "openPreview", id }) };
     const copyAction = {
       label: "Copy",
       primary: true,

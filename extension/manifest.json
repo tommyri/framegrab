@@ -31,6 +31,9 @@
     },
     "capture-blur": {
       "description": "Choose items to blur in screenshots"
+    },
+    "annotate-last": {
+      "description": "Annotate the last capture"
     }
   }
 }

@@ -1,4 +1,4 @@
-import { saveCapture, loadCapture, saveBefore, loadBefore, clearBefore } from "./store.js";
+import { saveCapture, loadCapture, loadLatestCapture, saveBefore, loadBefore, clearBefore } from "./store.js";
 import { combine } from "./compare.js";
 
 // Chrome rejects more than two captureVisibleTab calls per second.
@@ -25,9 +25,14 @@ chrome.runtime.onStartup.addListener(refreshBeforeBadge);
 chrome.runtime.onInstalled.addListener(refreshBeforeBadge);
 
 chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (command === "annotate-last") {
+    const result = await annotateLast(tab);
+    if (result.error) await flagError(tab?.id, result.error);
+    return;
+  }
   const mode = COMMAND_MODES[command];
   if (!mode) return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const result = await start(tab, mode);
   if (result.error) await flagError(tab?.id, result.error);
 });
@@ -178,6 +183,11 @@ const handlers = {
     return { ok: true };
   },
 
+  async annotateLast() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    return annotateLast(tab);
+  },
+
   async openPreview({ id, copy }, sender) {
     const params = new URLSearchParams({ id: String(id) });
     if (copy) params.set("copy", "1");
@@ -188,6 +198,16 @@ const handlers = {
     return { ok: true };
   },
 };
+
+async function annotateLast(besideTab) {
+  const capture = await loadLatestCapture();
+  if (!capture) return { error: "There's no capture to annotate yet. Take a screenshot first." };
+  await chrome.tabs.create({
+    url: chrome.runtime.getURL(`preview.html?id=${capture.id}`),
+    index: besideTab ? besideTab.index + 1 : undefined,
+  });
+  return { ok: true };
+}
 
 function blurKey(key) {
   return `blur:${key}`;

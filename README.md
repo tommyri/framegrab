@@ -44,7 +44,24 @@ Framegrab paints a generated frosted patch over the element rather than blurring
 
 If a blurred item can't be found after the page changes, Framegrab stops and asks before capturing. It also refuses to capture if a popup or dialog is open inside a blurred item, because that content would show unblurred.
 
-If a shortcut clashes with another one, change it on the browser's extension shortcuts page (`brave://extensions/shortcuts`). Blur has no default shortcut because browsers allow an extension only four, but you can assign one there.
+### Annotate
+
+Choose **Annotate** in the toast to open the capture in a new tab, then add arrows, boxes and text. If the toast has gone, choose **Annotate last capture** in the popup. Choose **Copy** or **Download** to get the finished image.
+
+| Action | How |
+| --- | --- |
+| Pick a tool | `A` arrow, `B` box, `T` text |
+| Move an annotation | Drag it |
+| Delete an annotation | Click it, then press `⌫` |
+| Change its colour | Click it, then choose a colour |
+| Edit text | Double-click it |
+| Undo and redo | `⌘Z` and `⇧⌘Z` |
+
+Annotations are saved with the capture, so reloading the tab keeps them, and they stay editable after you copy or download. Framegrab keeps only the last 5 captures, so older ones and their annotations disappear.
+
+Text is a single line, and arrows and boxes can't be resized, so undo and redraw them instead. The toast's **Download** and **Set as before** always use the capture without annotations.
+
+If a shortcut clashes with another one, change it on the browser's extension shortcuts page (`brave://extensions/shortcuts`). Blur and Annotate last capture have no default shortcut because browsers allow an extension only four, but you can assign them there.
 
 **Image size** in the popup switches between full resolution and Standard (1x). Standard files are smaller and display at a natural size in a PR.
 

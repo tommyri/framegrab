@@ -110,6 +110,7 @@ Object.assign(PAGES, {
       addEventListener("click", () => window.pageClicks++);
     </script>`),
   "/blur-tall": doc(`${bands(3)}${secret("deep", "TOKEN123")}${bands(3)}`),
+  "/annotate": doc(`<div style="height:3000px;background:#123456"></div>`, "body{background:#123456}"),
   "/blur-other": doc(`${secret("unrelated", "NOTSECRET")}`),
   "/blur-hide-svg": doc(`${secret("one", "TOKEN123")}`, "svg{display:none!important}"),
   "/blur-popover-shadow": doc(`
@@ -161,6 +162,8 @@ before(async () => {
   cpSync(join(ROOT, "extension"), extensionDir, { recursive: true });
   const manifest = JSON.parse(readFileSync(join(extensionDir, "manifest.json"), "utf8"));
   manifest.host_permissions = ["<all_urls>"];
+  // Only so tests can read back what the editor copied.
+  manifest.permissions.push("clipboardRead");
   writeFileSync(join(extensionDir, "manifest.json"), JSON.stringify(manifest));
   // Playwright can't see into closed shadow roots, so the test copy opens them.
   // shipping-manifest.test.mjs checks that the real one stays closed.
@@ -743,7 +746,7 @@ test("popup: shows Capture after only while a before is saved, and starts it", a
   const popup2 = await context.newPage();
   await popup2.goto(`chrome-extension://${extensionId}/popup.html`);
   await popup2.locator(".compare").waitFor();
-  assert.ok(await popup2.locator(".thumb").evaluate((img) => img.decode().then(() => img.naturalWidth > 0)));
+  assert.ok(await popup2.locator(".compare .thumb").evaluate((img) => img.decode().then(() => img.naturalWidth > 0)));
   assert.match(await popup2.locator('kbd[data-command="capture-after"]').textContent(), /[AG]$/);
   await page.bringToFront();
   await popup2.locator('[data-mode="after"]').click();
@@ -1145,5 +1148,321 @@ test("blur: a blur lost while a screenshot is being taken discards the capture",
   await toastTitled("Capture failed").waitFor({ timeout: 30000 });
   assert.match(await toast().innerText(), /blurred item changed/);
   assert.equal(await latestId(), before);
+  await page.close();
+});
+
+// ------------------------------------------------------------- annotations
+
+const BASE = rgb("#123456");
+const PINK = rgb("#ff2d87");
+const BLUE = rgb("#1f6feb");
+
+async function openEditor() {
+  await open("/annotate");
+  await start("visible");
+  await toast().waitFor({ timeout: 30000 });
+  const [editor] = await Promise.all([context.waitForEvent("page"), toastButton("Annotate").click()]);
+  await editor.locator(".stage img").waitFor();
+  await editor.waitForFunction(() => document.querySelector(".stage img").naturalWidth > 0);
+  await editor.bringToFront();
+  const box = await editor.locator(".stage img").boundingBox();
+  const natural = await editor.locator(".stage img").evaluate((img) => img.naturalWidth);
+  return { editor, box, scale: natural / box.width };
+}
+
+async function drag(editor, box, from, to) {
+  await editor.mouse.move(box.x + from[0], box.y + from[1]);
+  await editor.mouse.down();
+  await editor.mouse.move(box.x + (from[0] + to[0]) / 2, box.y + (from[1] + to[1]) / 2);
+  await editor.mouse.move(box.x + to[0], box.y + to[1]);
+  await editor.mouse.up();
+}
+
+const count = (editor) => editor.evaluate(() => Number(document.body.dataset.count));
+
+// Copies through the real Copy button, then reads the clipboard back.
+async function copied(editor, points) {
+  await editor.locator("#copy").click();
+  await editor.locator("#copy", { hasText: "Copied" }).waitFor({ timeout: 15000 });
+  return editor.evaluate(async (points) => {
+    const [item] = await navigator.clipboard.read();
+    const bitmap = await createImageBitmap(await item.getType("image/png"));
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    const at = ([x, y]) => {
+      const i = (Math.round(y) * bitmap.width + Math.round(x)) * 4;
+      return [data[i], data[i + 1], data[i + 2]];
+    };
+    let pink = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 230 && data[i + 1] < 90 && data[i + 2] > 90 && data[i + 2] < 180) pink++;
+    }
+    return { width: bitmap.width, height: bitmap.height, pink, points: points.map(at) };
+  }, points);
+}
+
+test("annotate: a box lands at the right place in the exported image", async () => {
+  const { editor, box, scale } = await openEditor();
+  await editor.keyboard.press("b");
+  await drag(editor, box, [100, 100], [300, 200]);
+  const shot = await copied(editor, [[200 * scale, 100 * scale], [200 * scale, 150 * scale], [20, 20]]);
+  assert.ok(near(shot.points[0], PINK, 12), `edge is pink, got ${shot.points[0]}`);
+  assert.ok(near(shot.points[1], BASE), `inside stays untouched, got ${shot.points[1]}`);
+  assert.ok(near(shot.points[2], BASE), "the rest of the image is untouched");
+  assert.equal(shot.width, Math.round(box.width * scale));
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: an arrow is drawn from start to tip", async () => {
+  const { editor, box, scale } = await openEditor();
+  await drag(editor, box, [100, 100], [300, 100]);
+  const shot = await copied(editor, [[180 * scale, 100 * scale], [180 * scale, 130 * scale]]);
+  assert.ok(near(shot.points[0], PINK, 12), `shaft is pink, got ${shot.points[0]}`);
+  assert.ok(near(shot.points[1], BASE), "off the line is untouched");
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: a stray click doesn't leave a mark", async () => {
+  const { editor, box } = await openEditor();
+  await editor.mouse.click(box.x + 100, box.y + 100);
+  assert.equal(await count(editor), 0);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: text is added with Enter and appears in the export", async () => {
+  const { editor, box, scale } = await openEditor();
+  await editor.keyboard.press("t");
+  await editor.mouse.click(box.x + 100, box.y + 100);
+  await editor.locator(".text-entry").waitFor();
+  // Tool shortcut letters have to type normally here.
+  await editor.keyboard.type("Fix <this> & \"that\" abt");
+  await editor.keyboard.press("Enter");
+  assert.equal(await count(editor), 1);
+  assert.equal(await editor.locator(".overlay text").textContent(), 'Fix <this> & "that" abt');
+  assert.equal(await editor.locator('[data-tool="text"]').getAttribute("aria-pressed"), "true");
+  const shot = await copied(editor, [[20, 20]]);
+  assert.ok(shot.pink > 100, "text is drawn, and those characters don't break the export");
+  assert.equal(shot.width, Math.round(box.width * scale));
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: empty text and Escape add nothing", async () => {
+  const { editor, box } = await openEditor();
+  await editor.keyboard.press("t");
+  await editor.mouse.click(box.x + 100, box.y + 100);
+  await editor.keyboard.press("Enter");
+  assert.equal(await count(editor), 0);
+  await editor.mouse.click(box.x + 100, box.y + 100);
+  await editor.keyboard.type("nope");
+  await editor.keyboard.press("Escape");
+  assert.equal(await count(editor), 0);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: double-clicking text edits it, and clearing it removes it", async () => {
+  const { editor, box } = await openEditor();
+  await editor.keyboard.press("t");
+  await editor.mouse.click(box.x + 100, box.y + 100);
+  await editor.keyboard.type("first");
+  await editor.keyboard.press("Enter");
+  await editor.mouse.dblclick(box.x + 110, box.y + 100);
+  await editor.locator(".text-entry").waitFor();
+  await editor.keyboard.type("second");
+  await editor.keyboard.press("Enter");
+  assert.equal(await editor.locator(".overlay text").textContent(), "second");
+  assert.equal(await count(editor), 1);
+  await editor.mouse.dblclick(box.x + 110, box.y + 100);
+  await editor.keyboard.press("Backspace");
+  await editor.keyboard.press("Enter");
+  assert.equal(await count(editor), 0);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: undo and redo step through changes", async () => {
+  const { editor, box } = await openEditor();
+  await drag(editor, box, [100, 100], [200, 100]);
+  await drag(editor, box, [100, 200], [200, 200]);
+  assert.equal(await count(editor), 2);
+  await editor.keyboard.press("ControlOrMeta+z");
+  assert.equal(await count(editor), 1);
+  await editor.locator("#undo").click();
+  assert.equal(await count(editor), 0);
+  assert.equal(await editor.locator("#undo").isDisabled(), true);
+  await editor.locator("#redo").click();
+  await editor.keyboard.press("ControlOrMeta+Shift+z");
+  assert.equal(await count(editor), 2);
+  assert.equal(await editor.locator("#redo").isDisabled(), true);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: dragging moves an annotation in one undo step", async () => {
+  const { editor, box, scale } = await openEditor();
+  await editor.keyboard.press("b");
+  await drag(editor, box, [100, 100], [300, 200]);
+  await drag(editor, box, [200, 100], [200, 300]);
+  assert.equal(await count(editor), 1, "dragging an edge moves it instead of drawing");
+  const moved = await copied(editor, [[200 * scale, 300 * scale], [200 * scale, 100 * scale]]);
+  assert.ok(near(moved.points[0], PINK, 12), `new position is pink, got ${moved.points[0]}`);
+  assert.ok(near(moved.points[1], BASE), `old position is clear, got ${moved.points[1]}`);
+  await editor.keyboard.press("ControlOrMeta+z");
+  const back = await copied(editor, [[200 * scale, 100 * scale]]);
+  assert.ok(near(back.points[0], PINK, 12), "undo puts it back");
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: selecting allows delete and recolour, and the outline isn't exported", async () => {
+  const { editor, box, scale } = await openEditor();
+  await editor.keyboard.press("b");
+  await drag(editor, box, [100, 100], [300, 200]);
+  await editor.mouse.click(box.x + 200, box.y + 100);
+  assert.equal(await editor.locator("#delete").isDisabled(), false);
+  assert.equal(await editor.locator("[data-ui]").count(), 2);
+  await editor.locator('.swatch[aria-label="Blue"]').click();
+  // The selection outline sits 4 CSS px outside the box.
+  const outline = (100 - 4 - 1.5) * scale;
+  const shot = await copied(editor, [[200 * scale, 100 * scale], [200 * scale, outline]]);
+  assert.ok(near(shot.points[0], BLUE, 14), `recoloured, got ${shot.points[0]}`);
+  assert.ok(near(shot.points[1], [255, 255, 255], 40) || near(shot.points[1], BASE, 40), "no dashed outline in the image");
+  await editor.mouse.click(box.x + 200, box.y + 100);
+  await editor.keyboard.press("Backspace");
+  assert.equal(await count(editor), 0);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: annotations survive a reload", async () => {
+  const { editor, box } = await openEditor();
+  await drag(editor, box, [100, 100], [200, 100]);
+  await editor.waitForTimeout(150);
+  await editor.reload();
+  await editor.locator(".stage img").waitFor();
+  await editor.waitForFunction(() => document.body.dataset.count === "1");
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: with no annotations, Copy gives the original image", async () => {
+  const { editor, box, scale } = await openEditor();
+  const shot = await copied(editor, [[100, 100]]);
+  assert.equal(shot.pink, 0);
+  assert.equal(shot.width, Math.round(box.width * scale));
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: Download names the annotated file separately", async () => {
+  const { editor, box } = await openEditor();
+  await drag(editor, box, [100, 100], [200, 100]);
+  // Playwright renames downloads on disk, so record what the editor asked for.
+  await editor.evaluate(() => {
+    const original = chrome.downloads.download;
+    chrome.downloads.download = (options) => {
+      window.requested = options.filename;
+      return original.call(chrome.downloads, options);
+    };
+  });
+  await editor.locator("#download").click();
+  await editor.locator("#download", { hasText: "Downloaded" }).waitFor({ timeout: 15000 });
+  assert.match(await editor.evaluate(() => window.requested), /^Framegrab\/.*_annotated\.png$/);
+  const state = await worker.evaluate(async () => {
+    const [latest] = await chrome.downloads.search({ orderBy: ["-startTime"], limit: 1 });
+    return { error: latest.error ?? null, bytes: latest.bytesReceived };
+  });
+  assert.equal(state.error, null);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate: drawn marks stay the same on-screen size at any image size", async () => {
+  await worker.evaluate(() => chrome.storage.local.set({ size: "1x" }));
+  const { editor, box, scale } = await openEditor();
+  await editor.keyboard.press("b");
+  await drag(editor, box, [100, 100], [300, 200]);
+  const stroke = await editor.locator(".overlay rect").nth(2).evaluate((rect) => {
+    const svg = rect.ownerSVGElement;
+    return Number(rect.getAttribute("stroke-width")) * (svg.getBoundingClientRect().width / svg.viewBox.baseVal.width);
+  });
+  assert.ok(Math.abs(stroke - 3 * (1 / scale)) < 0.5, `about 3 CSS px, got ${stroke}`);
+  await editor.close();
+  await page.close();
+});
+
+test("annotate last capture: the popup offers it only once a capture exists", async () => {
+  await worker.evaluate(async () => {
+    const db = await new Promise((resolve) => {
+      const req = indexedDB.open("framegrab", 2);
+      req.onsuccess = () => resolve(req.result);
+    });
+    const tx = db.transaction("captures", "readwrite");
+    tx.objectStore("captures").clear();
+    await new Promise((resolve) => (tx.oncomplete = resolve));
+    db.close();
+  });
+  const extensionId = new URL(worker.url()).host;
+  const empty = await context.newPage();
+  await empty.goto(`chrome-extension://${extensionId}/popup.html`);
+  await empty.locator('[data-mode="visible"]').waitFor();
+  await empty.waitForTimeout(150);
+  assert.equal(await empty.locator("#annotate-last").isVisible(), false);
+  await empty.close();
+
+  await open("/annotate");
+  await start("visible");
+  await toast().waitFor({ timeout: 30000 });
+  const id = await latestId();
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.locator("#annotate-last").waitFor();
+  assert.ok(await popup.locator("#annotate-last .thumb").evaluate((img) => img.decode().then(() => img.naturalWidth > 0)));
+  const [editor] = await Promise.all([context.waitForEvent("page"), popup.locator("#annotate-last").click()]);
+  await editor.waitForURL(new RegExp(`preview\\.html\\?id=${id}$`));
+  await editor.locator(".stage img").waitFor();
+  await editor.close();
+  await page.close();
+});
+
+test("annotate last capture: picks the newest capture and keeps its annotations", async () => {
+  const first = await openEditor();
+  await first.editor.close();
+  await page.close();
+  const { editor, box } = await openEditor();
+  await drag(editor, box, [100, 100], [200, 100]);
+  await editor.waitForTimeout(150);
+  const id = new URL(editor.url()).searchParams.get("id");
+  await editor.close();
+
+  const extensionId = new URL(worker.url()).host;
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await popup.locator("#annotate-last").waitFor();
+  const [again] = await Promise.all([context.waitForEvent("page"), popup.locator("#annotate-last").click()]);
+  await again.waitForURL(/preview\.html/);
+  assert.equal(new URL(again.url()).searchParams.get("id"), id);
+  await again.waitForFunction(() => document.body.dataset.count === "1");
+  await again.close();
+  await page.close();
+});
+
+test("annotate last capture: the shortcut opens the editor", async () => {
+  await open("/annotate");
+  await start("visible");
+  await toast().waitFor({ timeout: 30000 });
+  const [editor] = await Promise.all([
+    context.waitForEvent("page"),
+    worker.evaluate(() => chrome.commands.onCommand.dispatch("annotate-last")),
+  ]);
+  await editor.waitForURL(/preview\.html\?id=\d+$/);
+  await editor.close();
   await page.close();
 });

@@ -7,13 +7,37 @@
   </head>
   <body class="preview">
     <header>
+      <div class="tools" role="toolbar" aria-label="Annotation tools">
+        <button class="tool" data-tool="arrow" title="Arrow (A)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13 12 4M6 3.5h6.5V10" /></svg>
+          Arrow
+        </button>
+        <button class="tool" data-tool="box" title="Box (B)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.5" /></svg>
+          Box
+        </button>
+        <button class="tool" data-tool="text" title="Text (T)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4V3h10v1M8 3v10M6 13h4" /></svg>
+          Text
+        </button>
+        <span class="swatches"></span>
+        <button id="undo" class="plain" title="Undo (⌘Z)" disabled>Undo</button>
+        <button id="redo" class="plain" title="Redo (⇧⌘Z)" disabled>Redo</button>
+        <button id="delete" class="plain" title="Delete the selected annotation (⌫)" disabled>Delete</button>
+      </div>
       <p class="meta" role="status"></p>
       <div class="actions">
         <button id="copy" class="primary">Copy</button>
         <button id="download">Download</button>
       </div>
     </header>
-    <main><img alt="Captured screenshot" hidden /></main>
+    <main>
+      <div class="stage" hidden>
+        <img alt="Captured screenshot" />
+        <svg class="overlay" aria-label="Annotations"></svg>
+        <input class="text-entry" type="text" aria-label="Annotation text" hidden />
+      </div>
+    </main>
     <script type="module" src="preview.js"></script>
   </body>
 </html>
