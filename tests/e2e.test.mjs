@@ -117,6 +117,10 @@ Object.assign(PAGES, {
     </script>`),
   "/blur-tall": doc(`${bands(3)}${secret("deep", "TOKEN123")}${bands(3)}`),
   "/annotate": doc(`<div style="height:3000px;background:#123456"></div>`, "body{background:#123456}"),
+  "/region": doc(`
+    <div id="red" style="position:absolute;left:100px;top:100px;width:200px;height:100px;background:#ff0000"></div>
+    <div style="height:3000px"></div>
+    <script>window.pageClicks = 0; addEventListener("click", () => window.pageClicks++);</script>`),
   "/blur-other": doc(`${secret("unrelated", "NOTSECRET")}`),
   "/partial": partial("before SECRETTOKEN after", "SECRETTOKEN"),
   "/partial-shifted": partial("added text before SECRETTOKEN after", "SECRETTOKEN"),
@@ -1987,5 +1991,163 @@ test("partial blur: a before's whole-element blur still carries to another site"
   await start("after");
   await toastTitled("Before/after copied").waitFor({ timeout: 30000 });
   assert.equal((await readCapture()).red, 0);
+  await page.close();
+});
+
+// ------------------------------------------------------------ select an area
+
+async function selectArea(from, to, mode = "region") {
+  await start(mode);
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.mouse.move(...from);
+  await page.mouse.down();
+  await page.mouse.move((from[0] + to[0]) / 2, (from[1] + to[1]) / 2);
+  await page.mouse.move(...to);
+  await page.mouse.up();
+}
+
+test("area: dragging captures exactly that rectangle", async () => {
+  await open("/region");
+  await selectArea([100, 100], [300, 200]);
+  const shot = await readCapture();
+  assert.equal(shot.width, 200 * SCALE);
+  assert.equal(shot.height, 100 * SCALE);
+  assert.equal(shot.red, shot.width * shot.height, "only the red box is in the image");
+  assert.match(shot.filename, /_area_/);
+  assert.equal(await page.evaluate(() => window.pageClicks), 0);
+  await page.close();
+});
+
+test("area: dragging up and to the left works too", async () => {
+  await open("/region");
+  await selectArea([300, 200], [100, 100]);
+  const shot = await readCapture();
+  assert.equal(shot.width, 200 * SCALE);
+  assert.equal(shot.red, shot.width * shot.height);
+  await page.close();
+});
+
+test("area: the size shows while dragging", async () => {
+  await open("/region");
+  await start("region");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.mouse.move(100, 100);
+  await page.mouse.down();
+  await page.mouse.move(250, 160);
+  assert.equal(await page.locator("framegrab-ui .tag").textContent(), "150 × 60");
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.close();
+});
+
+test("area: a click or tiny drag keeps selecting, and Escape cancels", async () => {
+  await open("/region");
+  const before = await latestId();
+  await start("region");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.mouse.click(150, 150);
+  await page.mouse.move(150, 150);
+  await page.mouse.down();
+  await page.mouse.move(152, 152);
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator("framegrab-ui .hint").count(), 1, "still selecting");
+  await page.keyboard.press("Escape");
+  await page.locator("framegrab-ui").waitFor({ state: "detached" });
+  await page.waitForTimeout(300);
+  assert.equal(await latestId(), before);
+  await page.close();
+});
+
+test("area: a drag past the edge stops at the window", async () => {
+  await open("/region");
+  const width = await page.evaluate(() => document.documentElement.clientWidth);
+  await selectArea([width - 50, 100], [width + 200, 160]);
+  const shot = await readCapture();
+  assert.equal(shot.width, 50 * SCALE);
+  assert.equal(shot.height, 60 * SCALE);
+  await page.close();
+});
+
+test("area: you can scroll before starting the drag", async () => {
+  await open("/region");
+  await start("region");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.mouse.move(400, 300);
+  await page.mouse.wheel(0, 40);
+  await page.waitForFunction(() => window.scrollY >= 40);
+  await page.mouse.move(100, 60);
+  await page.mouse.down();
+  await page.mouse.move(200, 100);
+  await page.mouse.move(300, 160);
+  await page.mouse.up();
+  const shot = await readCapture();
+  assert.equal(shot.red, shot.width * shot.height, "the scrolled-up red box fills the selection");
+  await page.close();
+});
+
+test("area: page scripts can't fake a selection", async () => {
+  await open("/region");
+  const before = await latestId();
+  await start("region");
+  await page.locator("framegrab-ui .hint").waitFor();
+  await page.evaluate(() => {
+    const fire = (type, x, y) => window.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true }));
+    fire("pointerdown", 10, 10);
+    fire("pointermove", 400, 400);
+    fire("pointerup", 400, 400);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator("framegrab-ui .hint").count(), 1, "still selecting");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  assert.equal(await latestId(), before);
+  await page.close();
+});
+
+test("area: blurred items inside the area stay blurred", async () => {
+  await open("/region");
+  await blurItems("#red");
+  await selectArea([90, 90], [310, 210]);
+  const shot = await readCapture();
+  assert.equal(shot.red, 0);
+  await page.close();
+});
+
+test("area: before/after repeats the same area, and Select area picks a new one", async () => {
+  await open("/region");
+  await selectArea([100, 100], [300, 200]);
+  await setBefore();
+  await page.evaluate(() => (document.getElementById("red").style.background = "#0000ff"));
+  await start("after");
+  await toastTitled("Before/after copied").waitFor({ timeout: 30000 });
+  assert.equal(await page.locator("framegrab-ui .hint").count(), 0, "no selection needed");
+  const x = PAD + 100;
+  const shot = await readCapture([x]);
+  assert.equal(shot.width, 200 * SCALE + PAD * 2);
+  assert.ok(near(shot.columns[x][PAD + LABEL + 20], [255, 0, 0]), "before is red");
+  assert.ok(near(shot.columns[x][shot.height - PAD - 20], [0, 0, 255]), "after is blue");
+
+  await toastButton("Select area").click();
+  await page.locator("framegrab-ui .prompt", { hasText: "Select the area to compare" }).waitFor();
+  await page.mouse.move(100, 100);
+  await page.mouse.down();
+  await page.mouse.move(200, 150);
+  await page.mouse.move(250, 150);
+  await page.mouse.up();
+  await toastTitled("Before/after copied").waitFor({ timeout: 30000 });
+  await page.close();
+});
+
+test("area: the popup starts selecting", async () => {
+  await open("/region");
+  const extensionId = new URL(worker.url()).host;
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  await page.bringToFront();
+  await popup.locator('[data-mode="region"]').click();
+  await page.locator("framegrab-ui .hint", { hasText: "select an area" }).waitFor();
+  await page.keyboard.press("Escape");
   await page.close();
 });

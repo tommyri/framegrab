@@ -6,6 +6,10 @@ Add entries under **Unreleased** as you make changes. A release moves them under
 
 ## Unreleased
 
+### Added
+
+- Select an area to capture by dragging a rectangle across the window. Before/after images repeat the same area.
+
 ## 2026.11.1 - 2026-11-04
 
 ### Added

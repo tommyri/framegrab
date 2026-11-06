@@ -19,6 +19,7 @@ const COMMAND_MODES = {
   "capture-element": "element",
   "capture-after": "after",
   "capture-blur": "blur",
+  "capture-region": "region",
 };
 
 chrome.runtime.onStartup.addListener(refreshBeforeBadge);
@@ -86,7 +87,7 @@ const handlers = {
     return { ok: true };
   },
 
-  async finish({ height, mode, locator, compare, blurs }, sender) {
+  async finish({ height, mode, locator, region, compare, blurs }, sender) {
     const session = sessions.get(sender.tab.id);
     if (!session?.canvas) throw new Error("Nothing was captured. Try again.");
     sessions.delete(sender.tab.id);
@@ -117,6 +118,7 @@ const handlers = {
       pixelRatio,
       mode,
       locator: locator || null,
+      region: region || null,
       blurs: blurs || [],
       compare: Boolean(before),
     };
@@ -136,7 +138,9 @@ const handlers = {
 
   async getBefore() {
     const before = await loadBefore();
-    return before ? { mode: before.mode, locator: before.locator, blurs: before.blurs || [] } : null;
+    return before
+      ? { mode: before.mode, locator: before.locator, region: before.region || null, blurs: before.blurs || [] }
+      : null;
   },
 
   async setBefore({ id }) {

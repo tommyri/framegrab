@@ -19,8 +19,11 @@ After changing the code, click the reload icon on the extension's card.
 | Capture | Shortcut (macOS) | What you get |
 | --- | --- | --- |
 | Visible area | `⌥⇧V` | The window as you see it |
+| Select an area | None by default | Any rectangle you drag across the window |
 | Full page | `⌥⇧F` | The whole page, scrolled and stitched |
 | Pick an element | `⌥⇧E` | One element, even if it's taller than the window |
+
+To select an area, drag a rectangle and release to capture. You can scroll before you start dragging, and `Esc` cancels.
 
 In the picker, click to capture. `↑` and `↓` move to the parent or child element, `Enter` captures and `Esc` cancels. `Esc` also stops a full-page capture.
 
@@ -30,7 +33,7 @@ In the picker, click to capture. `↑` and `↓` move to the parent or child ele
 2. Make your change.
 3. Press `⌥⇧A` (`Alt+Shift+G` on Windows and Linux) or choose **Capture after** in the popup.
 
-You get one labelled image on your clipboard. Framegrab repeats the same kind of capture as the before, and for an element it finds the same one again, even after a reload. If it can't find it, the picker opens. If it finds the wrong one, choose **Pick element** in the toast.
+You get one labelled image on your clipboard. Framegrab repeats the same kind of capture as the before. For an element it finds the same one again, even after a reload. If it can't find it, the picker opens, and if it finds the wrong one, choose **Pick element** in the toast. For an area it captures the same part of the window, so keep the page scrolled to the same place. Choose **Select area** in the toast to select it again.
 
 Images sit side by side when they're narrow or tall, and stack when they're wide. The before stays saved so you can keep iterating, until you choose **Clear before** or set a new one. Regular captures are never combined.
 
@@ -66,7 +69,7 @@ Annotations are saved with the capture, so reloading the tab keeps them, and the
 
 Text is a single line, and arrows and boxes can't be resized, so undo and redraw them instead. The toast's **Download** and **Set as before** always use the capture without annotations.
 
-If a shortcut clashes with another one, change it on the browser's extension shortcuts page (`brave://extensions/shortcuts`). Blur and Annotate last capture have no default shortcut because browsers allow an extension only four, but you can assign them there.
+If a shortcut clashes with another one, change it on the browser's extension shortcuts page (`brave://extensions/shortcuts`). Select an area, Blur and Annotate last capture have no default shortcut because browsers allow an extension only four, but you can assign them there.
 
 **Image size** in the popup switches between full resolution and Standard (1x). Standard files are smaller and display at a natural size in a PR.
 
@@ -75,6 +78,7 @@ If a shortcut clashes with another one, change it on the browser's extension sho
 - Full-page capture takes about half a second per screen, because browsers allow two captures per second.
 - Images stop at 16,384 px on the long side. Resolution drops first, then the page height is cut off at 16,384 CSS px.
 - Elements wider than the window are cropped to its width.
+- A selected area has to fit in the window. You can't scroll while dragging, so use Full page or Pick an element for anything taller.
 - The picker selects an iframe as a whole, not the elements inside it.
 - An element without an id or test id is found again by its position in the page, so a change to the structure around it can select a different element. This also applies to blurs after a reload, so check them before sharing. The toast warns you when that has happened.
 - Blur can't select part of a form field's value or reach inside an iframe, only cover the whole element.

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Framegrab",
   "version": "2026.11.1",
-  "description": "Screenshot the visible area, the full page or a single element, and paste it straight into a PR or Slack.",
+  "description": "Screenshot the visible area, a selected area, the full page or a single element, and paste it straight into a PR or Slack.",
   "minimum_chrome_version": "116",
   "permissions": ["activeTab", "scripting", "downloads", "storage", "clipboardWrite"],
   "background": { "service_worker": "background.js", "type": "module" },
@@ -16,6 +16,9 @@
     "capture-visible": {
       "suggested_key": { "default": "Alt+Shift+V" },
       "description": "Capture the visible area"
+    },
+    "capture-region": {
+      "description": "Select an area to capture"
     },
     "capture-full": {
       "suggested_key": { "default": "Alt+Shift+F" },

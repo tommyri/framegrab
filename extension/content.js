@@ -32,6 +32,7 @@
       const compare = mode === "after";
       let captureMode = mode;
       let target = null;
+      let region = null;
       let before = null;
       if (compare) {
         before = await send({ type: "getBefore" });
@@ -42,9 +43,10 @@
           });
           return;
         }
-        captureMode = forcePick ? "element" : before.mode;
-        // Same element as the before, without picking it again.
+        captureMode = before.mode;
+        // Same element or area as the before, without picking it again.
         if (captureMode === "element" && !forcePick) target = resolveLocator(before.locator);
+        if (captureMode === "region" && !forcePick && fitsWindow(before.region)) region = before.region;
       }
       // A before's blurs apply to its after too, or the data would show there.
       const blurOptions = { extra: before?.blurs || [], ignoreMissing };
@@ -58,6 +60,10 @@
         if (!target) return;
         locator = locatorFor(target);
       }
+      if (captureMode === "region") {
+        region ??= await pickRegion(compare ? "Select the area to compare" : "");
+        if (!region) return;
+      }
       // The page may have re-rendered while the picker was open.
       check = await syncBlurs(blurOptions);
       if (check.missing.length && !ignoreMissing) return showMissingBlurs(check.missing.length, retry);
@@ -66,10 +72,11 @@
       await nextPaint();
       if (captureMode === "visible") await captureVisible();
       else if (captureMode === "full") await captureFullPage();
+      else if (captureMode === "region") await captureRegion(region);
       else await captureElement(target);
       if (cancelled) throw new Cancelled();
       const blurs = allBlurLocators();
-      const result = await send({ type: "finish", height: lastHeight, mode: captureMode, locator, compare, blurs });
+      const result = await send({ type: "finish", height: lastHeight, mode: captureMode, locator, region, compare, blurs });
       await deliver(result, { blurred: blurs.length, restored });
     } catch (error) {
       await send({ type: "abort" }).catch(() => {});
@@ -93,6 +100,19 @@
   }
 
   // ---------------------------------------------------------------- capture
+
+  // An area is kept in window coordinates, so an after covers the same part of
+  // the window as its before, provided the window is still big enough.
+  function fitsWindow(area) {
+    const { clientWidth, clientHeight } = document.documentElement;
+    return Boolean(area) && area.x + area.width <= clientWidth + 1 && area.y + area.height <= clientHeight + 1;
+  }
+
+  async function captureRegion(area) {
+    await send({ type: "begin", width: area.width, height: area.height, label: "area" });
+    await grab({ x: area.x, y: area.y, width: area.width, height: area.height }, 0, 0, 1);
+    lastHeight = area.height;
+  }
 
   async function captureVisible() {
     const width = window.innerWidth;
@@ -1134,6 +1154,141 @@
     }
   `;
 
+  const REGION_CSS = `
+    .dim { position: fixed; inset: 0; background: rgba(20, 16, 32, .42); pointer-events: none; }
+  `;
+
+  // Resolves with the dragged rectangle in window coordinates, or null on Escape.
+  function pickRegion(prompt = "") {
+    return new Promise((resolve) => {
+      const { host, root } = mountHost(PICKER_CSS + REGION_CSS, { cursor: "crosshair" });
+      const make = (tag, className, text) => {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (text) el.textContent = text;
+        return el;
+      };
+      const dim = make("div", "dim");
+      const box = make("div", "box");
+      box.append(...["tl", "tr", "bl", "br"].map((corner) => make("i", `tick ${corner}`)));
+      const tag = make("div", "tag");
+      box.hidden = tag.hidden = true;
+      const hint = make("div", "hint");
+      if (prompt) hint.append(make("span", "prompt", prompt));
+      for (const [keys, action] of [[["Drag"], "select an area"], [["Esc"], "cancel"]]) {
+        const item = make("span");
+        item.append(...keys.map((key) => make("kbd", "", key)), action);
+        hint.append(item);
+      }
+      root.append(dim, box, tag, hint);
+
+      let start = null;
+      let area = null;
+
+      const clamp = (value, max) => Math.min(max, Math.max(0, value));
+      function pointAt(event) {
+        const { clientWidth, clientHeight } = document.documentElement;
+        return { x: clamp(event.clientX, clientWidth), y: clamp(event.clientY, clientHeight) };
+      }
+
+      function paint() {
+        if (!area) {
+          dim.hidden = false;
+          box.hidden = tag.hidden = true;
+          return;
+        }
+        dim.hidden = true;
+        box.hidden = tag.hidden = false;
+        box.style.transform = `translate(${area.x}px, ${area.y}px)`;
+        box.style.width = `${area.width}px`;
+        box.style.height = `${area.height}px`;
+        tag.textContent = `${Math.round(area.width)} × ${Math.round(area.height)}`;
+        const below = area.y + area.height + 6 + tag.offsetHeight < window.innerHeight;
+        const y = below ? area.y + area.height + 6 : Math.max(6, area.y - tag.offsetHeight - 6);
+        const x = Math.min(Math.max(6, area.x), window.innerWidth - tag.offsetWidth - 6);
+        tag.style.transform = `translate(${x}px, ${y}px)`;
+      }
+
+      function swallow(event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+
+      // Only real input counts, so page scripts can't choose what gets captured.
+      function onDown(event) {
+        swallow(event);
+        if (!event.isTrusted || event.button !== 0) return;
+        start = pointAt(event);
+        area = null;
+        try {
+          host.setPointerCapture(event.pointerId);
+        } catch {}
+      }
+
+      function onMove(event) {
+        swallow(event);
+        if (!event.isTrusted || !start) return;
+        const at = pointAt(event);
+        area = {
+          x: Math.min(start.x, at.x),
+          y: Math.min(start.y, at.y),
+          width: Math.abs(at.x - start.x),
+          height: Math.abs(at.y - start.y),
+        };
+        paint();
+      }
+
+      function onUp(event) {
+        swallow(event);
+        if (!event.isTrusted || !start) return;
+        start = null;
+        // A click or a tiny drag is probably a slip, so keep selecting.
+        if (!area || area.width < 4 || area.height < 4) {
+          area = null;
+          paint();
+          return;
+        }
+        finish(area);
+      }
+
+      function onKey(event) {
+        swallow(event);
+        if (event.isTrusted && event.key === "Escape") finish(null);
+      }
+
+      // Scrolling is allowed until the drag starts, to bring the right part into view.
+      function onWheel(event) {
+        swallow(event);
+        if (!event.isTrusted || start) return;
+        const under = document.elementsFromPoint(event.clientX, event.clientY).find((el) => el !== host);
+        const scroller = under && (isScrollable(under) ? under : nearestScroller(under));
+        (scroller || window).scrollBy({ left: event.deltaX, top: event.deltaY, ...INSTANT });
+      }
+
+      const swallowed = ["mousedown", "mouseup", "mousemove", "click", "dblclick", "auxclick", "contextmenu", "keyup", "keypress", "touchstart", "touchend"];
+      const options = { capture: true, passive: false };
+      function attach(add) {
+        const method = add ? "addEventListener" : "removeEventListener";
+        window[method]("pointerdown", onDown, options);
+        window[method]("pointermove", onMove, options);
+        window[method]("pointerup", onUp, options);
+        window[method]("keydown", onKey, options);
+        window[method]("wheel", onWheel, options);
+        for (const type of swallowed) window[method](type, swallow, options);
+      }
+
+      function finish(result) {
+        attach(false);
+        host.remove();
+        cancelPicker = null;
+        resolve(result);
+      }
+
+      cancelPicker = () => finish(null);
+      attach(true);
+    });
+  }
+
   // With onPick the picker stays open and each pick calls it; whatever it
   // returns replaces the prompt. Without it, the first pick resolves the promise.
   // With onTextRange, dragging across text selects part of it instead.
@@ -1596,14 +1751,15 @@
       },
     };
     const pickAgain = {
-      label: "Pick element",
+      label: mode === "region" ? "Select area" : "Pick element",
       run: () => {
         removeToast?.();
         run("after", { forcePick: true });
       },
     };
 
-    const extras = compare ? [clearBefore, ...(mode === "element" ? [pickAgain] : [])] : [setBefore];
+    const repickable = mode === "element" || mode === "region";
+    const extras = compare ? [clearBefore, ...(repickable ? [pickAgain] : [])] : [setBefore];
     const output = copied
       ? [download, open]
       : blob
